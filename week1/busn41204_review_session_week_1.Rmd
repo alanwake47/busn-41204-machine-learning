@@ -1,6 +1,6 @@
 ---
 title: "BUSN41204 Week 1 Review Session"
-author: "Boxiang (Shawn) Lyu"
+author: "Aman Krishna"
 date: "1/7/2022"
 output: pdf_document
 urlcolor: blue
