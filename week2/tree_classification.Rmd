@@ -1,0 +1,160 @@
+---
+title: "Tree Classification Example"
+author: ""
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = TRUE)
+```
+
+A young bank wants to explore ways of converting its 
+liability (deposit) customers to personal loan customers.
+A campaign the bank ran for liability customers showed a healthy conversion
+rate of over 9% successes. This has encouraged the retail marketing department to
+devise smarter campaigns with better target marketing. The goal of our analysis
+is to model the previous campaign’s customer behavior to analyze what combination 
+of factors make a customer more likely to accept a personal loan. This
+will serve as the basis for the design of a new campaign.
+
+Column Name                 Description
+------------------          ----------------
+ID	                        Customer ID
+Age	                        Customer's age in completed years
+Experience	                #years of professional experience
+Income	                    Annual income of the customer ($000)
+ZIPCode	                    Home Address ZIP code.
+Family	                    Family size of the customer
+CCAvg	                      Avg. spending on credit cards per month ($000)
+Education	                  Education Level. 1: Undergrad; 2: Graduate; 3: Advanced/Professional
+Mortgage                    Value of house mortgage if any. ($000)
+Personal Loan	              Did this customer accept the personal loan offered in the last campaign?
+Securities Account	        Does the customer have a securities account with the bank?
+CD Account	                Does the customer have a certificate of deposit (CD) account with the bank?
+Online	                    Does the customer use internet banking facilities?
+CreditCard	                Does the customer use a credit card issued by UniversalBank?
+
+
+
+### Analysis
+
+Loading libraries 
+```{r}
+library(rpart)
+library(rpart.plot)
+library(caret)    # used for confusionMatrix
+```
+
+Loading data
+```{r}
+bank.df <- read.csv("UniversalBank.csv")
+dim(bank.df)
+```
+
+
+Drop ID and zip code columns.
+```{r}
+bank.df <- bank.df[ , -c(1, 5)] 
+bank.df$Personal.Loan <- as.factor(bank.df$Personal.Loan)
+```
+
+Partition 5000 observations randomly into training (3000 records) and validation (2000 records).
+```{r}
+set.seed(131)
+train.index <- sample(c(1:dim(bank.df)[1]), dim(bank.df)[1]*0.6)
+train.df <- bank.df[train.index, ]
+valid.df <- bank.df[-train.index, ]
+```
+
+Build a classification tree
+```{r}
+default.ct <- rpart(Personal.Loan ~ ., data = train.df, method = "class")
+```
+
+Plot tree
+```{r}
+prp(default.ct, type = 1, extra = 1, under = TRUE, split.font = 1, varlen = -10)
+```
+
+Let us investigate a larger tree
+```{r}
+deeper.ct <- rpart(Personal.Loan ~ ., data = train.df, method = "class", cp = 0, minsplit = 1)
+```
+
+Count number of leaves
+```{r}
+length(deeper.ct$frame$var[deeper.ct$frame$var == "<leaf>"])
+```
+
+Plot tree
+```{r}
+prp(deeper.ct, type = 1, extra = 1, under = TRUE, split.font = 1, varlen = -10,
+      box.col=ifelse(deeper.ct$frame$var == "<leaf>", 'gray', 'white'))
+```
+
+
+Compare predictions from both trees on both the training and validation data.
+We need to set argument `type = "class"` in `predict()` to generate predicted class membership.
+
+
+Generate confusion matrix for training data
+```{r}
+default.ct.point.pred.train <- predict(default.ct, train.df, type = "class")
+deeper.ct.point.pred.train <- predict(deeper.ct, train.df, type = "class")
+cm.default.train <- confusionMatrix(default.ct.point.pred.train, train.df$Personal.Loan)
+cm.deeper.train <- confusionMatrix(deeper.ct.point.pred.train, train.df$Personal.Loan)
+print(cm.default.train)
+print(cm.deeper.train)
+```
+
+
+
+Generate confusion matrix for validation data
+```{r}
+default.ct.point.pred.valid <- predict(default.ct, valid.df, type = "class")
+deeper.ct.point.pred.valid <- predict(deeper.ct, valid.df, type = "class")
+cm.default.valid <- confusionMatrix(default.ct.point.pred.valid, valid.df$Personal.Loan)
+cm.deeper.valid <- confusionMatrix(deeper.ct.point.pred.valid, valid.df$Personal.Loan)
+print(cm.default.valid)
+print(cm.deeper.valid)
+```
+
+
+Argument `xval` refers to the number of folds to use in rpart's built-in cross-validation procedure.
+Argument `cp` sets the smallest value for the complexity parameter.
+
+```{r}
+cv.ct <- rpart(Personal.Loan ~ ., data = train.df, method = "class",
+            cp = 0.00001, minsplit = 5, xval = 5)
+printcp(cv.ct)
+plotcp(cv.ct)
+```
+
+
+Prune by lower cp
+```{r}
+pruned.ct <- prune(cv.ct, cp = cv.ct$cptable[which.min(cv.ct$cptable[,"xerror"]),"CP"])
+length(pruned.ct$frame$var[pruned.ct$frame$var == "<leaf>"])
+prp(pruned.ct, type = 1, extra = 1, split.font = 1, varlen = -10)
+```
+
+Improved version of pruning 
+```{r}
+# this is the cp parameter with smallest cv-errror
+index_cp_min = which.min(cv.ct$cptable[,"xerror"])
+
+# one standard deviation rule 
+# need to find first cp value for which the xerror is below horizontal line on the plot
+(val_h = cv.ct$cptable[index_cp_min, "xerror"] + cv.ct$cptable[index_cp_min, "xstd"])
+(index_cp_std = Position(function(x) x < val_h, cv.ct$cptable[, "xerror"]))
+(cp_std = cv.ct$cptable[ index_cp_std, "CP" ])  
+```
+
+
+```{r}
+pruned.ct <- prune(cv.ct, cp = cp_std)
+length(pruned.ct$frame$var[pruned.ct$frame$var == "<leaf>"])
+prp(pruned.ct, type = 1, extra = 1, split.font = 1, varlen = -10)
+```
+

@@ -1,0 +1,307 @@
+---
+title: "BUSN41204 Week 2 Review Session"
+author: "Simiao Jiao"
+date: "1/14/23"
+output: pdf_document
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE,message = FALSE)
+knitr::opts_chunk$set(fig.width = 10,fig.align="center")
+```
+
+# Schedule
+
+1. Tree Classification Example 1 (Universal Bank)
+
+2. Tree Classification Example 2 (Membership Data)
+
+# 1 Tree Classification Example 1 (Universal Bank)
+
+A young bank wants to explore ways of converting its 
+liability (deposit) customers to personal loan customers.
+A campaign the bank ran for liability customers showed a healthy conversion
+rate of over 9% successes. This has encouraged the retail marketing department to
+devise smarter campaigns with better target marketing. The goal of our analysis
+is to model the previous campaign’s customer behavior to analyze what combination 
+of factors make a customer more likely to accept a personal loan. This
+will serve as the basis for the design of a new campaign.
+
+Column Name                 Description
+------------------          ----------------
+ID	                        Customer ID
+Age	                        Customer's age in completed years
+Experience	                #years of professional experience
+Income	                    Annual income of the customer ($000)
+ZIPCode	                    Home Address ZIP code.
+Family	                    Family size of the customer
+CCAvg	                      Avg. spending on credit cards per month ($000)
+Education	                  Education Level. 1: Undergrad; 2: Graduate; 3: Advanced/Professional
+Mortgage                    Value of house mortgage if any. ($000)
+Personal Loan	              Did this customer accept the personal loan offered in the last campaign?
+Securities Account	        Does the customer have a securities account with the bank?
+CD Account	                Does the customer have a certificate of deposit (CD) account with the bank?
+Online	                    Does the customer use internet banking facilities?
+CreditCard	                Does the customer use a credit card issued by UniversalBank?
+
+
+
+### Analysis
+
+Loading libraries 
+```{r}
+library(rpart)
+library(rpart.plot)
+library(caret)    # used for confusionMatrix
+```
+
+Loading data
+```{r}
+bank.df <- read.csv("UniversalBank.csv")
+dim(bank.df)
+```
+
+
+Drop ID and zip code columns.
+```{r}
+bank.df <- bank.df[ , -c(1, 5)] 
+bank.df$Personal.Loan <- as.factor(bank.df$Personal.Loan)
+```
+
+Partition 5000 observations randomly into training (3000 records) and validation (2000 records).
+```{r}
+set.seed(131)
+train.index <- sample(c(1:dim(bank.df)[1]), dim(bank.df)[1]*0.6)
+train.df <- bank.df[train.index, ]
+valid.df <- bank.df[-train.index, ]
+```
+
+Build a classification tree
+```{r}
+default.ct <- rpart(Personal.Loan ~ ., data = train.df, method = "class")
+```
+
+Plot tree
+```{r}
+prp(default.ct, type = 1, extra = 1, under = TRUE, split.font = 1, varlen = -10)
+```
+
+Let us investigate a larger tree
+```{r}
+deeper.ct <- rpart(Personal.Loan ~ ., data = train.df, method = "class", cp = 0, minsplit = 1)
+```
+
+Count number of leaves
+```{r}
+length(deeper.ct$frame$var[deeper.ct$frame$var == "<leaf>"])
+```
+
+Plot tree
+```{r}
+prp(deeper.ct, type = 1, extra = 1, under = TRUE, split.font = 1, varlen = -10,
+      box.col=ifelse(deeper.ct$frame$var == "<leaf>", 'gray', 'white'))
+```
+
+
+Compare predictions from both trees on both the training and validation data.
+We need to set argument `type = "class"` in `predict()` to generate predicted class membership.
+
+
+Generate confusion matrix for training data
+```{r}
+default.ct.point.pred.train <- predict(default.ct, train.df, type = "class")
+deeper.ct.point.pred.train <- predict(deeper.ct, train.df, type = "class")
+cm.default.train <- confusionMatrix(default.ct.point.pred.train, train.df$Personal.Loan)
+cm.deeper.train <- confusionMatrix(deeper.ct.point.pred.train, train.df$Personal.Loan)
+print(cm.default.train)
+print(cm.deeper.train)
+```
+
+
+
+Generate confusion matrix for validation data
+```{r}
+default.ct.point.pred.valid <- predict(default.ct, valid.df, type = "class")
+deeper.ct.point.pred.valid <- predict(deeper.ct, valid.df, type = "class")
+cm.default.valid <- confusionMatrix(default.ct.point.pred.valid, valid.df$Personal.Loan)
+cm.deeper.valid <- confusionMatrix(deeper.ct.point.pred.valid, valid.df$Personal.Loan)
+print(cm.default.valid)
+print(cm.deeper.valid)
+```
+
+
+Argument `xval` refers to the number of folds to use in rpart's built-in cross-validation procedure.
+Argument `cp` sets the smallest value for the complexity parameter.
+
+```{r}
+cv.ct <- rpart(Personal.Loan ~ ., data = train.df, method = "class",
+            cp = 0.00001, minsplit = 5, xval = 5)
+printcp(cv.ct)
+plotcp(cv.ct)
+```
+
+
+Prune by lower cp
+```{r}
+pruned.ct <- prune(cv.ct, cp = cv.ct$cptable[which.min(cv.ct$cptable[,"xerror"]),"CP"])
+length(pruned.ct$frame$var[pruned.ct$frame$var == "<leaf>"])
+prp(pruned.ct, type = 1, extra = 1, split.font = 1, varlen = -10)
+```
+
+Improved version of pruning 
+```{r}
+# this is the cp parameter with smallest cv-errror
+index_cp_min = which.min(cv.ct$cptable[,"xerror"])
+
+# one standard deviation rule 
+# need to find first cp value for which the xerror is below horizontal line on the plot
+(val_h = cv.ct$cptable[index_cp_min, "xerror"] + cv.ct$cptable[index_cp_min, "xstd"])
+(index_cp_std = Position(function(x) x < val_h, cv.ct$cptable[, "xerror"]))
+(cp_std = cv.ct$cptable[ index_cp_std, "CP" ])  
+```
+
+
+```{r}
+pruned.ct <- prune(cv.ct, cp = cp_std)
+length(pruned.ct$frame$var[pruned.ct$frame$var == "<leaf>"])
+prp(pruned.ct, type = 1, extra = 1, split.font = 1, varlen = -10)
+```
+
+# 2 Tree Classification Example 2 (Membership Data)
+
+Dataset: Data of customers that have a membership at a specific store. Information available include \texttt{Age}, \texttt{Sex}, \texttt{Annual\_Income\_k} in k\$ and \texttt{Nb\_Purchases} the number of items purchased in the past month.
+Goal: Segment the members into different groups to tailor marketing strategies on a per segment basis.
+
+We do not know how many segments there might be in the data.
+
+```{r out.width = "100%",fig.height=5}
+# load data
+data = read.csv('membership_data_c.csv')
+
+# look at the dataframe
+# View(data)
+
+# Do some exploratory analysis
+# plots
+par(mfrow=c(1,2))
+plot(data$Annual_Income_k,data$Age,pch=19)
+plot(data$Age,data$Nb_Purchases,pch=19)
+plot(data$Annual_Income_k,data$Nb_Purchases,pch=19)
+plot(data$Annual_Income_k,data$Nb_Purchases,col=data$clust,pch=19)
+legend('right',c("c1","c2","c3","c4","c5"), col=1:5,pch=19)
+```
+
+Note:
+\begin{enumerate}
+  \item From visual evidence we can see that setting a number of cluster of $k=5$ seems to be a reasonable choice. (visual clues not always possible and expert knowledge may be needed)
+  \item A seperation over age is also possible. You may (or may not) want to include age in the clustering. It depends on you business goal and how you want to group people.
+\end{enumerate}
+
+
+## Building the tree
+Suppose we want to do the opposite of clustering. We now have data of members that for which we know which cluster they belong to. A new member comes, signs up for the membership card and provides his information: his annual income and an expected number of purchases per month. Now our goal is to predict which segment this new customer should belong to so we can target the marketing strategy.
+
+In this section we will:
+\begin{enumerate}
+  \item Build a classification model based on decision trees, that takes income and estimated nb of purchases as inputs.
+  \item Assess the model performance
+  \item Prune the tree if necessary i.e. too complex by looking at cross validation error.
+\end{enumerate}
+
+```{r out.width = "100%",fig.height=5}
+# install.packages("rpart")
+library(rpart)
+library(rpart.plot)
+
+# Build the tree
+t1 = rpart(clust~Annual_Income_k+Nb_Purchases, data, method="class")
+# method = "anova" for a regression tree
+
+par(mfrow=c(1,2))
+# plot the tree
+plot(t1, main="Classification Tree")
+text(t1, cex=0.85)
+rpart.plot(t1, main="Classification Tree")
+
+par(mfrow=c(1,1))
+# look at the fit
+printcp(t1)
+plotcp(t1)
+```
+
+## Add noise to data, build complex model and prune tree
+
+Suppose the clustering and segmentation was performed a few month ago and members have since then changed some of their monthly number of purchases. You're not interested to correct your segmentation of old members but rather build a predictive classification model based on this "noisy" slightly less accurate data. 
+
+```{r out.width = "100%",fig.height=10}
+set.seed(1)
+
+#data$clust = clust0$cluster
+data$Annual_Income_k = data$Annual_Income_k
+data$Nb_Purchases = data$Nb_Purchases+sample(seq(-10,50,1),nrow(data),replace = T)
+
+# plot
+par(mfrow=c(1,1))
+plot(data$Annual_Income_k,data$Nb_Purchases,col=data$clust,pch=19)
+legend('right',c("c1","c2","c3","c4","c5"), col=1:5,pch=19)
+```
+
+We see now that some (very few) members have moved from one segment to another, while building the model we want to ignore this behavior a make sure the model complexity is not to high to capture those isolated cases. If the model is too complex (i.e too good), then when new data (a new member) signs up the model might misclassify the segment for him.
+
+```{r out.width = "100%",fig.height=5}
+# Force to build a complex tree
+t_complex = rpart(clust~Annual_Income_k+Nb_Purchases, data, method="class",
+              control=rpart.control(minsplit = 1, cp=0.0000001))
+
+# minsplit=1 means the tree keeps splitting as long as there is
+# more than 1 sample in a splitting node
+
+# cp (complexity factor) means the tree keeps on splitting as long as
+# the delta relative error is more than the specified number 
+
+par(mfrow=c(1,2))
+# plot the tree
+plot(t_complex, main="Classification Tree", uniform = T) # very complex tree
+text(t_complex, cex=0.85)
+
+# look at the fit
+printcp(t_complex)
+plotcp(t_complex) # tree overfits the data
+```
+
+This tree is overfitting the data. It has 0 classification error but the cross validation error goes up after more than 4 splits.
+
+We need to prune the tree.
+
+```{r out.width = "100%",fig.height=8}
+# find the cp for which xval is minimum (find best complexity)
+cp_best = t_complex$cptable[which.min(t_complex$cptable[,"xerror"]),"CP"]
+
+# Rebuild a tree that is not too complex
+t_best = rpart(clust~Annual_Income_k+Nb_Purchases, data, method="class",
+              control=rpart.control(minsplit = 1, cp=cp_best))
+
+# plot the tree
+plot(t_best, main="Classification Tree", uniform = T) # very complex tree
+text(t_best, cex=0.85)
+
+# make prediction with the best tree
+print(newcustomer <- predict(t_best,data.frame(Annual_Income_k=75,Nb_Purchases=60)))
+# The predicted for this new member is cluster 4
+
+# See prediction on plot
+plot(data$Annual_Income_k,data$Nb_Purchases,col=data$clust,pch=19)
+legend('right',c("c1","c2","c3","c4","c5",'new'), col=c(1:5,4),pch=c(19,19,19,19,19,17))
+
+# find column number with max classification probability
+which.max(newcustomer)
+
+# plot point
+points(72,60,pch=17,col=which.max(newcustomer),cex=1.5)
+
+# look at confusion matrix
+print(xtabs(~apply(predict(t_best), 1, function(x) which.max(x))+data$clust))
+```
+
+Prediction using the tree model seems to classify the new customer accurately in cluster 4 (although it's in between two noisy red points). This is the advantage of pruning, avoiding overfitting.
