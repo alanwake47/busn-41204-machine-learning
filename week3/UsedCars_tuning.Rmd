@@ -1,0 +1,265 @@
+---
+title: "Used Cars tuning"
+author: "Mladen Kolar (mkolar@chicagobooth.edu)"
+output: 
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = TRUE)
+options(digits=3)
+
+library(dplyr)
+library(ranger)
+library(xgboost)
+library(tictoc)
+library(iml)
+library(pdp)
+library(Matrix)
+
+set.seed(156)
+```
+
+
+Here we examine `UsedCars` data which contains factors.
+
+```{r}
+# download the file if it does not exist
+if (!file.exists("UsedCars.csv"))
+  download.file('https://github.com/ChicagoBoothML/MLClassData/raw/master/UsedCars/UsedCars.csv', 'UsedCars.csv')
+
+uc = read.csv('UsedCars.csv') 
+n = nrow(uc)
+```
+
+```{r}
+str(uc)
+```
+
+```{r}
+uc <- mutate_if(uc, is.character, as.factor)
+str(uc)
+```
+
+```{r}
+train.index = sample(nrow(uc), 5000)
+uc.train = uc[train.index,]
+uc.test = uc[-train.index,]
+```
+
+
+
+## Random Forest
+
+First, create a grid.
+
+```{r}
+tic()
+hyper_grid <- expand.grid(
+  mtry       = seq(2, 10, by = 2),
+  node_size  = c(25, 50, 100, 150, 200),
+  sample_size = c(.55, .632, .70, .80),
+  OOB_RMSE   = 0
+)
+
+for(i in 1:nrow(hyper_grid)) {
+  
+  # train model
+  model <- ranger(
+    formula         = price ~ ., 
+    data            = uc.train, 
+    num.trees       = 500,
+    mtry            = hyper_grid$mtry[i],
+    min.node.size   = hyper_grid$node_size[i],
+    sample.fraction = hyper_grid$sample_size[i],
+    seed            = 1246
+  )
+  
+  # add OOB error to grid
+  hyper_grid$OOB_RMSE[i] <- sqrt(model$prediction.error)
+}
+
+(oo = hyper_grid %>% 
+  dplyr::arrange(OOB_RMSE) %>%
+  head(10))
+toc()
+```
+
+```{r}
+rf.fit.final <- ranger(
+    formula         = price ~ ., 
+    data            = uc.train, 
+    num.trees       = 500,
+    mtry            = oo[1,]$mtry,
+    min.node.size   = oo[1,]$node_size,
+    sample.fraction = oo[1,]$sample_size,
+    importance      = 'impurity'
+    )
+
+yhat.rf = predict(rf.fit.final, data = uc.test)$predictions
+sqrt( (var(uc.test$price - yhat.rf)) )                        # RMSE on the test error
+``` 
+
+
+
+```{r}
+tvimp = importance(rf.fit.final)
+par(mar=c(8,5,1,1))
+plot(tvimp/max(tvimp),axes=F,pch=16,col='red',xlab="",ylab="variable importance",cex=2,cex.lab=1.5)
+axis(1,labels=names(tvimp),at=1:length(tvimp),cex=0.5,las=2)
+axis(2)
+```
+
+
+```{r}
+
+# Create custom predict function that returns the predicted values as a vector 
+pred.rf.fun <- function(model, newdata)  
+  predict(model, data = newdata)$predictions
+
+mod <- Predictor$new(rf.fit.final, 
+                     data = uc.train,
+                     predict.fun = pred.rf.fun    # we need a custom predict function
+                     )
+eff <- FeatureEffect$new(mod,
+          feature = c("mileage", "trim"), 
+          method = "pdp",
+          grid.size = 30
+          )
+```
+
+```{r}
+plot(eff)
+```
+
+```{r}
+eff$set.feature( c("year", "trim") )
+plot(eff)
+```
+
+```{r}
+eff$set.feature( c("year", "mileage") )
+plot(eff)
+```
+
+
+## Boosting
+
+XGBoost only works with matrices that contain all numeric variables; 
+consequently, we need to one hot encode our data. 
+There are different ways to do this in R.
+
+- `Matrix::sparse.model.matrix`
+- `caret::dummyVars`
+
+
+
+```{r}
+X = sparse.model.matrix(price ~ ., data = uc)[,-1]
+X.train = X[train.index, ]
+Y.train = uc$price[train.index]
+X.test = X[-train.index, ]
+Y.test = uc$price[-train.index]
+
+dim(X.train)
+```
+
+
+First, create a grid.
+
+```{r}
+# create hyperparameter grid
+hyper_grid <- expand.grid(
+  shrinkage = c(.01, .1, .3),     ## controls the learning rate
+  interaction.depth = c(1, 3, 5), ## tree depth
+  n.minobsinnode = c(10, 30, 50), ##  minimum number of observations required in each terminal node
+  bag.fraction = c(.5, .65, .8),  ##  percent of training data to sample for each tree
+  optimal_trees = 0,               # a place to dump results
+  min_RMSE = 0                     # a place to dump results
+)
+```
+
+
+Now we can perform the grid search.
+
+```{r cache=TRUE}
+for(i in 1:nrow(hyper_grid)) {
+  
+  # create parameter list
+  params <- list(
+    eta = hyper_grid$shrinkage[i],
+    max_depth = hyper_grid$interaction.depth[i],
+    min_child_weight = hyper_grid$n.minobsinnode[i],
+    subsample = hyper_grid$bag.fraction[i]
+  )
+  
+  # reproducibility
+  set.seed(123)
+  
+  # train model
+  xgb.tune <- xgb.cv(
+    params = params,
+    data = X.train,
+    label = Y.train,
+    nrounds = 3000,
+    nfold = 5,
+    objective = "reg:squarederror",     # for regression models
+    verbose = 0,                        # silent,
+    early_stopping_rounds = 10          # stop if no improvement for 10 consecutive trees
+  )
+  
+  # add min training error and trees to grid
+  hyper_grid$optimal_trees[i] <- which.min(xgb.tune$evaluation_log$test_rmse_mean)
+  hyper_grid$min_RMSE[i] <- min(xgb.tune$evaluation_log$test_rmse_mean)
+}
+```
+
+
+```{r}
+(oo = hyper_grid %>%
+      dplyr::arrange(min_RMSE) %>%
+      head(10))
+```
+
+
+```{r}
+# parameter list
+params <- list(
+  eta = oo[1,]$shrinkage,
+  max_depth = oo[1,]$interaction.depth,
+  min_child_weight = oo[1,]$n.minobsinnode,
+  subsample = oo[1,]$bag.fraction
+)
+
+# train final model
+xgb.fit.final <- xgboost(
+  params = params,
+  data = X.train,
+  label = Y.train,
+  nrounds = oo[1,]$optimal_trees,
+  objective = "reg:squarederror",
+  verbose = 0
+)
+```
+
+```{r}
+yhat.xgb <- predict(xgb.fit.final, newdata=X.test)
+sqrt( var(Y.test - yhat.xgb) )
+```
+
+
+```{r}
+# create importance matrix
+importance_matrix <- xgb.importance(model = xgb.fit.final)
+
+# variable importance plot
+xgb.plot.importance(importance_matrix, top_n = 10, measure = "Gain")
+```
+
+
+
+
+
+

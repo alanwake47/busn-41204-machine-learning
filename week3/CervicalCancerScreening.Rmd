@@ -1,0 +1,104 @@
+---
+title: "Classification Example"
+output: 
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = TRUE)
+options(digits=3)
+options(width = 48)
+
+library(dplyr)
+library(ranger)
+library(iml)
+library(ggplot2)
+
+set.seed(1)
+```
+
+We are going to use the data from:
+
+- _Fernandes, Cardoso, and Fernandes_. "Transfer learning with partial observability applied to cervical cancer screening." In Iberian Conference on Pattern Recognition and Image Analysis, 243–50. Springer. (2017). [URL](https://link.springer.com/chapter/10.1007/978-3-319-58838-4_27)
+
+The original data is available from 
+the [UCI Machine learning repository](https://archive.ics.uci.edu/ml/datasets/Cervical+cancer+%28Risk+Factors%29).
+We are using the preprocessed data,
+which was obtained using the script [here](https://github.com/christophM/interpretable-ml-book/blob/master/R/get-cervical-cancer-dataset.R).
+
+
+We are going to predict the `Biopsy` variable,
+which serves as the gold standard for diagnosing cervical cancer. 
+
+
+Load the data
+```{r}
+cervical = read.csv('cervical.csv')
+cervical$Biopsy = as.factor(cervical$Biopsy)
+```
+
+```{r}
+rf.fit <- ranger(
+  formula = Biopsy ~ .,
+  data            = cervical, 
+  num.trees       = 250,
+  importance      = 'impurity',
+  probability = T
+)
+```
+
+
+```{r warning=F, message=F, error=F}
+# Create custom predict function that returns the predicted values as a vector 
+pred.rf.fun <- function(model, newdata)  
+  predict(model, data = newdata)$predictions
+
+mod <- Predictor$new(rf.fit, 
+                     data = cervical,
+                     class = "Cancer",
+                     predict.fun = pred.rf.fun    # we need a custom predict function
+                     )
+pdp = FeatureEffect$new(mod, "Age", method = "pdp")
+p1 = pdp$plot(ylim=c(0, 0.4)) + 
+  scale_x_continuous(limits = c(0, NA)) +
+  scale_y_continuous('Predicted cancer probability', limits=c(0, 0.4))
+
+pdp$set.feature("Hormonal.Contraceptives..years.")
+p2 = pdp$plot(ylim=c(0, 0.4)) + 
+  scale_x_continuous("Years on hormonal contraceptives", limits = c(0, NA)) +
+  scale_y_continuous('', limits=c(0, 0.4))
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+
+```{r warning=F, message=F, error=F}
+cervical_subset_index = sample(1:nrow(cervical), size = 300)
+cervical_subset = cervical[cervical_subset_index, ]
+
+pred.cervical = Predictor$new(rf.fit, 
+                              data = cervical_subset, 
+                              class = "Cancer",
+                              predict.fun = pred.rf.fun
+                              )
+ice = FeatureEffect$new(pred.cervical, 
+                        "Age", 
+                        center.at = min(cervical_subset$Age),
+                        method = "pdp+ice")$plot() + 
+  scale_color_discrete(guide='none') + 
+  scale_y_continuous('Predicted cancer probability')
+ice
+```
+
+
+PDP of cancer probability and the interaction of age and number of pregnancies.
+
+```{r}
+pd = FeatureEffect$new(mod, c("Age", "Num.of.pregnancies"), method = "pdp") 
+pd$plot() 
+```
+
+
+
+

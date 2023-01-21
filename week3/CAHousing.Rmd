@@ -1,0 +1,551 @@
+---
+title: "CA Housing"
+author: "Mladen Kolar (mkolar@chicagobooth.edu)"
+output: 
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = TRUE)
+knitr::opts_chunk$set(tidy = TRUE, tidy.opts = list(width.cutoff = 60))
+options(digits=3)
+options(width = 48)
+
+library(dplyr)
+library(MASS)
+library(tree)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(gbm)
+library(iml)
+library(maps)
+library(pdp)
+library(ggplot2)
+library(plotfunctions)
+
+set.seed(1)
+```
+
+Our goal will be to predict `log(MedVal)` for census tracts.
+
+```{r}
+ca <- read.csv("CaliforniaHousing.csv")
+for (i in c(7,8,9)) {
+  xq <- quantile(ca[,i], c(0.001, 0.99))
+  ca <- ca[ca[,i] >= xq[1] & ca[,i] <= xq[2], ]
+}
+```
+
+```{r}
+train.index = sample(nrow(ca), 5000)
+ca.train = ca[train.index,]
+ca.test = ca[-train.index,]
+```
+
+
+## CART fit
+
+Income is dominant, with location important for low income.
+
+```{r, dev.args=list(bg='transparent'), fig.width=7.8, fig.height=4.25, fig.align="center", no.main=TRUE, echo=TRUE}
+
+ca.tree <- rpart(logMedVal ~ ., data=ca.train, control=rpart.control(xval=5))
+rpart.plot(ca.tree)
+```
+
+```{r}
+(ca.tree.size = length(unique(ca.tree$where)))
+```
+
+Now lets try to prune it back.
+
+```{r}
+bestcp = ca.tree$cptable[ which.min(ca.tree$cptable[,"xerror"]), "CP" ]
+ca.tree.pruned = prune(ca.tree, cp=bestcp)
+rpart.plot(ca.tree.pruned)
+```
+
+What is the size of the best tree found via CV?
+
+```{r}
+(ca.tree.pruned.size = length(unique(ca.tree.pruned$where)))
+```
+
+- Same size!  (No pruning necessary.)
+
+
+\newpage 
+
+## Random forest fit
+
+No tree to visualize, but we can make a so-called **variable importance** plot.
+
+```{r, fig.width=7}
+ca.bag <- randomForest(logMedVal ~ .,data=ca.train, 
+                      mtry=9, ntree=250, nodesize=25, keep.inbag=TRUE, importance=TRUE)
+varImpPlot(ca.bag, type=1, main="")
+```
+```{r, fig.width=7}
+ca.rf <- randomForest(logMedVal ~ .,data=ca.train, 
+                      mtry=3, ntree=250, nodesize=25, keep.inbag=TRUE, importance=TRUE)
+varImpPlot(ca.rf, type=1, main="")
+```
+
+
+```{r, fig.width=7}
+plot(ca.rf$mse, type='l', lwd=2, col='cyan', xlab='Number of trees', ylab='MSE', 
+         main='OOB Error Estimate')
+lines(ca.bag$mse, lwd=2, col='orange')
+legend("topright", legend=c('m = 3', 'm = 9'),
+       col=c("cyan", "orange"), lwd=2, cex=1.1)
+```
+
+Let us also compute the validation error.
+
+```{r, fig.width=7}
+# error for random forest model
+yhat = predict(ca.rf, newdata=ca.test)
+test.error.rf = var(yhat - ca.test$logMedVal)
+  
+# error for bagged model
+yhat = predict(ca.bag, newdata=ca.test)
+test.error.bag = var(yhat - ca.test$logMedVal)
+
+plot(ca.rf$mse, type='l', lwd=2, col='cyan', xlab='Number of trees', ylab='MSE', 
+         main='', ylim=c(0.06, 0.15))
+lines(ca.bag$mse, lwd=2, col='orange')
+abline(h=test.error.rf, lwd=2, lty=2, col='cyan')
+abline(h=test.error.bag, lwd=2, lty=2, col='orange')
+legend("topright", legend=c('OOB: m = 3', 'OOB: m = 9', 'Test: m = 3', 'Test: m = 9'),
+       col=c("cyan", "orange", "cyan", "orange"), lwd=2, cex=1.1, lty=c(1,1,2,2))
+
+```
+
+\newpage 
+
+## Partial dependence plot
+
+For more information, see:
+
+- Section 10.13.2 of ESL.
+- [Interpretabe Machine Learning](https://christophm.github.io/interpretable-ml-book/index.html) by Christoph Molnar, Section 5.1
+
+We can attempt to understand how the response variable 
+changes based on the important variables identified above.
+
+The **partial dependence plot** (PDP) shows the marginal effect 
+one or two features have on the predicted outcome.
+
+The average or partial dependence of $f(X)$ on $X_S$ is
+given as 
+\[
+  f_S(X_S) = E_{X_C} f(X_S, X_C).
+\]
+
+The partial dependence function is estimated by 
+calculating averages in the training data
+\[
+  \tilde f_S(X_S) = \frac{1}{n} \sum_{i=1}^n \hat f(X_S, x_{iC}).
+\]
+
+Useful description when $X_S$ do not have _strong interactions_ with those in $X_C$.
+
+**Interpretation**: Partial effect of $X_S$ after accounting for the average effect of other variables. 
+
+- They are **not** the effect of $X_S$ on $f(X)$ ignoring the effect of $X_C$
+
+
+**Pros**:
+
+- Computation is intuitive. The partial dependence function at 
+  a particular feature value represents the average prediction
+  if we force all data points to assume that feature value. 
+
+- The partial dependence plot shows how the average prediction
+  in your dataset changes when the j-th feature 
+  is changed (if feature is uncorrelated).
+
+**Cons**:
+
+- Some partial dependence plots do not show the feature distribution. 
+  Omitting the distribution can be misleading, 
+  because you might overinterpret regions with almost no data.
+
+- _Heterogeneous effects_ might be **hidden** because 
+  partial dependence plots only show the average marginal effects.
+  
+  - for half your data points a feature has a positive association
+  - for the other half the feature has a negative association
+  - The PD curve could be a horizontal line, since 
+     the effects of both halves of the dataset could cancel 
+     each other out.
+
+
+### Examples
+
+There are many packages that can create partial dependence plots.
+For example, the package `randomForest` comes with its own function `randomForest::partialPlot()` that can be used to visualize PD plots 
+for one variable.
+
+I will show you examples using two packages [`iml`](https://cran.r-project.org/web/packages/iml/index.html) and 
+[`pdp`](https://cran.r-project.org/web/packages/pdp/index.html).
+
+
+Let us start by using `iml` package.
+
+```{r}
+mod <- Predictor$new(ca.rf, data = ca.train)
+eff <- FeatureEffect$new(mod,
+          feature = "medianIncome", 
+          method = "pdp",
+          grid.size = 30
+          )
+
+p1 <- plot(eff, ylim=c(11,13))
+eff$set.feature("AveOccupancy")
+p2 <- plot(eff, ylim=c(11,13))
+eff$set.feature("housingMedianAge")
+p3 <- plot(eff, ylim=c(11,13))
+eff$set.feature("AveRooms")
+p4 <- plot(eff, ylim=c(11,13))
+
+gridExtra::grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+Is it surprising that the partial effect of `housingMedianAge` is flat, despite the variable being rather relevant?
+
+## Individual Conditional Expectation (ICE) 
+
+See _Peeking Inside the Black Box: Visualizing Statistical Learning with Plots of Individual Conditional Expectation_ by _Alex Goldstein, Adam Kapelner, Justin Bleich, Emil Pitkin_ for more details. [PDF](https://arxiv.org/abs/1309.6392)
+
+
+Individual Conditional Expectation (ICE) plots display one line per instance that shows how the instance's prediction changes when a feature changes.
+
+- Equivalent of partial dependence plot, but for individual data.
+
+One line represents the predictions for one instance if we vary the feature of interest.
+
+Partial dependence plots can obscure a heterogeneous relationship created by interactions. ICE curves can uncover heterogeneous relationships.
+
+
+```{r}
+mod <- Predictor$new(ca.rf, data = ca.train[sample(nrow(ca.train), 300), ])
+eff <- FeatureEffect$new(mod,
+          feature = "housingMedianAge", 
+          method = "pdp+ice",
+          grid.size = 30
+          )
+plot(eff)
+```
+
+When the curves have a wide range of intercepts and 
+are consequently "stacked" on each other, heterogeneity 
+in the model can be difficult to discern.
+
+We can compute the centered ICE plot, which removes level effects.
+
+For each curve $\tilde f^{(i)}$ in the ICE plot, 
+the corresponding centered-ICE curve is given by
+\[
+\tilde f^{(i)}_{cent} = \tilde f^{(i)} - \hat f(x^*, x_{iC})
+\]
+
+- $\hat f$ denotes the fitted model
+- the point $(x^*, \hat f(x^*, x_{iC}))$ acts as a "base case"
+  for each curve
+- If $x^*$ is the minimum value of $\{x_{iS}\}$, then
+  all curves originate at 0, thus removing the differences 
+  in level due to the different $x_{iC}$'s.
+
+```{r}
+mod <- Predictor$new(ca.rf, data = ca.train[sample(nrow(ca.train), 300), ])
+eff <- FeatureEffect$new(mod,
+          feature = "housingMedianAge",
+          center.at = min(ca.train$housingMedianAge),
+          method = "pdp+ice",
+          grid.size = 30
+          )
+plot(eff)
+```
+
+
+Let me now show you how to use `pdp` package.
+
+```{r error=F, message=FALSE, warning=FALSE}
+
+p1 = ca.rf %>%
+    partial(pred.var = "medianIncome") %>%
+    autoplot(rug=T, train=ca.train) + ylim(11, 13)
+
+p2 = ca.rf %>%
+    partial(pred.var = "AveOccupancy") %>%
+    autoplot(rug=T, train=ca.train) + ylim(11, 13)
+
+
+p3 = ca.rf %>%
+    partial(pred.var = "housingMedianAge") %>%
+    autoplot(rug=T, train=ca.train) + ylim(11, 13)
+ 
+p4 = ca.rf %>%
+    partial(pred.var = "AveRooms") %>%
+    autoplot(rug=T, train=ca.train) + ylim(11, 13)
+
+gridExtra::grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+```{r error=FALSE, message=FALSE, warning=FALSE}
+ca.rf %>%
+  partial(pred.var = c("housingMedianAge", "AveOccupancy"), chull = TRUE) %>%
+  autoplot(rug=T, train=ca.train)
+```
+
+Compute PDP for longitude and latitude.
+
+```{r}
+pdp.ll = partial(ca.rf, pred.var = c("longitude", "latitude"), chull = TRUE, train=ca.train)
+```
+
+```{r}
+yhat.colmap = heat.colors(10)[10:1]
+yhat.breaks = quantile(pdp.ll[,3], seq(0.05, 0.95, by=0.1))
+yhat.map <- function(y)
+  return(yhat.colmap[cut(drop(y),yhat.breaks)])
+
+map('state', 'california'); points(pdp.ll[,1:2], col=yhat.map(pdp.ll[,3]), pch=20, cex=.5)
+gradientLegend(yhat.breaks, yhat.colmap)
+```
+
+
+## GBM Fit
+
+
+```{r}
+gbm.stump = gbm(logMedVal~., data=ca.train, distribution='gaussian',
+               interaction.depth=1,
+               n.trees=5000,
+               shrinkage=0.01,
+               cv.folds = 5,
+               n.cores = 1, 
+               verbose = FALSE)
+
+print(gbm.stump)
+```
+Get variable importance
+```{r}
+par(mar=c(4,10,1,1))
+summary(gbm.stump, las=2)
+```
+
+
+```{r}
+gbm.perf(gbm.stump, method="cv")
+```
+
+
+```{r}
+gbm.d.3 = gbm(logMedVal~., data=ca.train, distribution='gaussian',
+               interaction.depth=3,
+               n.trees=5000,
+               shrinkage=0.01,
+               cv.folds = 5,
+               n.cores = 1, 
+               verbose = FALSE)
+
+print(gbm.d.3)
+```
+```{r}
+gbm.perf(gbm.d.3, method="cv")
+```
+
+
+
+Let us also compute the validation error.
+
+```{r}
+# error for random forest model
+yhat = predict(gbm.stump, newdata=ca.test, n.trees=5000)
+test.error.gbm.stump = var(yhat - ca.test$logMedVal)
+  
+# error for bagged model
+yhat = predict(gbm.d.3, newdata=ca.test, n.trees=5000)
+test.error.gbm.d.3 = var(yhat - ca.test$logMedVal)
+
+plot(gbm.stump$cv.error, type='l', lwd=2, col='cyan', xlab='Number of trees', ylab='MSE', 
+         main='', ylim=c(0.06, 0.15))
+lines(gbm.d.3$cv.error, lwd=2, col='orange')
+abline(h=test.error.gbm.stump, lwd=2, lty=2, col='cyan')
+abline(h=test.error.gbm.d.3, lwd=2, lty=2, col='orange')
+legend("topright", legend=c('CV d = 1', 'CV d = 3', 'Test: d = 1', 'Test: d = 3'),
+       col=c("cyan", "orange", "cyan", "orange"), lwd=2, cex=1.1, lty=c(1,1,2,2))
+
+```
+
+### Partial dependence plot
+
+```{r}
+# Create custom predict function that returns the predicted values as a vector 
+pred.gbm.fun <- function(model, newdata)  
+  predict(model, newdata=newdata, n.trees=5000)
+
+mod <- Predictor$new(gbm.d.3, 
+                     data = ca.train,
+                     predict.fun = pred.gbm.fun    # we need a custom predict function
+                     )
+eff <- FeatureEffect$new(mod,
+          feature = "medianIncome", 
+          method = "pdp",
+          grid.size = 30
+          )
+p1 <- plot(eff, ylim=c(11,13))
+eff$set.feature("AveOccupancy")
+p2 <- plot(eff, ylim=c(11,13))
+eff$set.feature("housingMedianAge")
+p3 <- plot(eff, ylim=c(11,13))
+eff$set.feature("AveRooms")
+p4 <- plot(eff, ylim=c(11,13))
+
+gridExtra::grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+
+
+## Visualize Fits
+
+To inspect the properties of these comparators (linear, CART, RF), first collect 
+
+- fitted values
+
+```{r cache=TRUE}
+yhat.tree <- predict(ca.tree, ca.test)
+yhat.rf <- predict(ca.rf, ca.test)
+yhat.gbm <- predict(gbm.d.3, newdata=ca.test, n.trees=5000)
+```
+
+- and residuals.
+
+```{r}
+r.tree <- ca.test$logMedVal - yhat.tree
+r.rf <- ca.test$logMedVal - yhat.rf
+r.gbm <- ca.test$logMedVal - yhat.gbm
+```
+
+
+The code below is for help with visualization
+
+- creates a palette of colors, and sets breaks to "bin" those colors,
+
+```{r}
+predcol <- heat.colors(9)[9:1]
+rcol <- c('red','orange',0,'turquoise','blue')
+predbreaks <- c(9,10,10.5,11,11.5,12,12.5,13,13.5,14.5) 
+residbreaks <- c(-3,-2,-1,1,2,3) 
+```
+
+- maps bins to colors for predictions and residuals
+
+```{r}
+predmap <- function(y)
+  return(predcol[cut(drop(y),predbreaks)])
+residmap <- function(e)
+  return(rcol[cut(drop(e), residbreaks)]) 
+```
+
+- and make a pre-set legend for shorthand later.
+
+```{r}
+pleg <- c("20k","100k","400k","1mil")
+```
+
+
+
+
+\newpage 
+
+## 
+
+```{r, dev.args=list(bg='transparent'), fig.width=8, fig.height=4.5, fig.align="center", neg.main=TRUE, echo=TRUE, eval=T}
+par(mfrow=c(1,2))
+map('state', 'california'); points(ca[,1:2], col=predmap(yhat.tree), pch=20, cex=.5)
+legend("topr", title="cart preds", fill=predcol[c(1,4,7,9)], legend=pleg, bty="n")
+map('state', 'california'); points(ca[,1:2], col=residmap(r.tree), cex=1.5)
+legend("topr", title="cart resids", fill=rcol[-3], legend=c(-2,-1, 1,2), bty="n")
+```
+
+
+\newpage 
+
+##
+
+```{r, dev.args=list(bg='transparent'), fig.width=8, fig.height=4.5, fig.align="center", neg.main=TRUE, echo=TRUE, eval=T}
+par(mfrow=c(1,2))
+map('state', 'california'); points(ca[,1:2], col=predmap(yhat.rf), pch=20, cex=.5)
+legend("topr", title="rf preds", fill=predcol[c(1,4,7,9)], legend=pleg, bty="n")
+map('state', 'california'); points(ca[,1:2], col=residmap(r.rf), cex=1.5)
+legend("topr", title="rf resids", fill=rcol[-3], legend=c(-2,-1, 1,2), bty="n")
+```
+
+\newpage 
+
+##
+
+```{r, dev.args=list(bg='transparent'), fig.width=8, fig.height=4.5, fig.align="center", neg.main=TRUE, echo=TRUE, eval=T}
+par(mfrow=c(1,2))
+map('state', 'california'); points(ca[,1:2], col=predmap(yhat.gbm), pch=20, cex=.5)
+legend("topr", title="gbm preds", fill=predcol[c(1,4,7,9)], legend=pleg, bty="n")
+map('state', 'california'); points(ca[,1:2], col=residmap(r.gbm), cex=1.5)
+legend("topr", title="gbm resids", fill=rcol[-3], legend=c(-2,-1, 1,2), bty="n")
+```
+
+
+\newpage 
+
+
+
+## Woah ...
+
+... random forests and boosting are super good!  
+
+- Who cares about interpretability when predictions are so accurate?
+- Well some people do, but perhaps that's what distinguishes stats from ML.
+
+
+- Lets engineer a Monte Carlo experiment with training/testing partitions.
+
+
+
+```{r cache=TRUE}
+mse <- data.frame(gbm=rep(NA, 10), cart=rep(NA, 10), rf=rep(NA, 10))
+for(i in 1:10){
+
+  ## training-testing split
+  train <- sample(1:nrow(ca), 5000) 
+  
+  ## gbm
+  gbm.fit <-   gbm(logMedVal~., data=ca[train,], distribution='gaussian',
+               interaction.depth=3,
+               n.trees=5000,
+               shrinkage=0.01,
+               n.cores = 1, 
+               verbose = FALSE)
+  yhat.gbm <- predict(gbm.fit, newdata=ca[-train,], n.trees=5000)
+  mse$gbm[i] <- var(ca$logMedVal[-train] - yhat.gbm)
+  
+  ## cart via tree
+  rt <- tree(logMedVal ~ ., data=ca[train,])
+  yhat.rt <- predict(rt, newdata=ca[-train,])
+  mse$cart[i] <- var(ca$logMedVal[-train] - yhat.rt)
+
+  ## random forest
+  rf <- randomForest(logMedVal ~ ., data=ca[train,], ntree=250, nodesize=25)
+  yhat.rf <- predict(rf, newdata=ca[-train,])
+  mse$rf[i] <- var(ca$logMedVal[-train] - yhat.rf)
+}
+
+boxplot(mse, xlab="method", ylab="MSE")
+```
+
+
+

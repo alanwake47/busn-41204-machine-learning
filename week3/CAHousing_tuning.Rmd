@@ -1,0 +1,214 @@
+---
+title: "CA Housing --- Tuning parameters"
+author: "Mladen Kolar (mkolar@chicagobooth.edu)"
+output: 
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = TRUE)
+options(digits=3)
+options(width = 48)
+
+library(dplyr)
+library(ranger)
+library(xgboost)
+
+set.seed(1)
+```
+
+
+```{r}
+ca <- read.csv("CaliforniaHousing.csv")
+
+train.index = sample(nrow(ca), 5000)
+ca.train = ca[train.index,]
+ca.test = ca[-train.index,]
+```
+
+
+Rarely do the default settings suffice. 
+
+We could tune parameters one at a time to see how the results change.
+
+A better option than manually tweaking hyperparameters 
+one at a time is to perform a grid search.
+
+- iterate over every combination of hyperparameter values;
+- assess which combination tends to perform well. 
+
+
+## Boosting
+
+
+The most common hyperparameters include:
+
+- **Number of trees**: The total number of trees to fit. We often require many trees.
+
+- **Depth of trees**: The number $d$ of splits in each tree, which controls the complexity 
+    of the boosted ensemble. Often $d=1$ works well, in which case each tree is a stump 
+    consisting of a single split. More commonly, $d$ is greater than 1, but it is unlikely 
+    to be larger than 10.
+    
+- **Learning rate** or **shrinkage**: Smaller values reduce the chance of overfitting,
+  but also increases the time to find the optimal fit. 
+  
+- **Subsampling**: Controls whether or not you use a fraction of the available
+   training observations. Using less than 100% of the training observations 
+   means you are implementing stochastic gradient descent. This can help to minimize 
+   overfitting and keep from getting stuck in a local minimum.
+
+
+First we want to construct our grid of hyperparameter combinations. 
+
+```{r}
+# create hyperparameter grid
+hyper_grid <- expand.grid(
+  shrinkage = c(.01, .1, .3),     ## controls the learning rate
+  interaction.depth = c(1, 3, 5), ## tree depth
+  n.minobsinnode = c(10, 30, 50), ##  minimum number of observations required in each terminal node
+  bag.fraction = c(.5, .65, .8),  ##  percent of training data to sample for each tree
+  optimal_trees = 0,               # a place to dump results
+  min_RMSE = 0                     # a place to dump results
+)
+```
+
+
+Now we can perform the grid search.
+
+```{r cache=TRUE}
+X.train = as.matrix( ca.train[,1:9] )
+Y.train = ca.train$logMedVal
+
+for(i in 1:nrow(hyper_grid)) {
+  
+  # create parameter list
+  params <- list(
+    eta = hyper_grid$shrinkage[i],
+    max_depth = hyper_grid$interaction.depth[i],
+    min_child_weight = hyper_grid$n.minobsinnode[i],
+    subsample = hyper_grid$bag.fraction[i]
+  )
+  
+  # reproducibility
+  set.seed(123)
+  
+  # train model
+  xgb.tune <- xgb.cv(
+    params = params,
+    data = X.train,
+    label = Y.train,
+    nrounds = 3000,
+    nfold = 5,
+    objective = "reg:squarederror",     # for regression models
+    verbose = 0,                        # silent,
+    early_stopping_rounds = 10          # stop if no improvement for 10 consecutive trees
+  )
+  
+  # add min training error and trees to grid
+  hyper_grid$optimal_trees[i] <- which.min(xgb.tune$evaluation_log$test_rmse_mean)
+  hyper_grid$min_RMSE[i] <- min(xgb.tune$evaluation_log$test_rmse_mean)
+}
+```
+
+
+```{r}
+(oo = hyper_grid %>%
+      dplyr::arrange(min_RMSE) %>%
+      head(10))
+```
+
+
+```{r}
+# parameter list
+params <- list(
+  eta = oo[1,]$shrinkage,
+  max_depth = oo[1,]$interaction.depth,
+  min_child_weight = oo[1,]$n.minobsinnode,
+  subsample = oo[1,]$bag.fraction
+)
+
+# train final model
+xgb.fit.final <- xgboost(
+  params = params,
+  data = X.train,
+  label = Y.train,
+  nrounds = oo[1,]$optimal_trees,
+  objective = "reg:squarederror",
+  verbose = 0
+)
+```
+
+
+```{r}
+yhat.xgb <- predict(xgb.fit.final, newdata=as.matrix(ca.test[,1:9]))
+(var(ca.test$logMedVal - yhat.xgb))
+```
+
+
+
+## Random Forest
+
+The most important tuning parameter is the number of candidate variables 
+to select from at each split. 
+
+There are a few additional hyperparameters (names will depend on the package you use):
+
+- **ntree**: number of trees. We want enough trees to stabalize 
+    the error.
+    
+- **mtry**: the number of variables to randomly sample as candidates at each split. 
+
+- **nodesize**: minimum number of samples within the terminal nodes. 
+   Controls the complexity of the trees. Smaller node size allows for deeper, 
+   more complex trees and smaller node results in shallower trees.
+
+- **maxnodes**: maximum number of terminal nodes. Another way to control the complexity of the trees. 
+
+- **sampsize**: the number of samples to train on. The default value is 63.25% of the training set since this is the expected value of unique observations in the bootstrap sample. Typically, when tuning this parameter we stay near the 60-80% range. 
+
+
+```{r}
+hyper_grid <- expand.grid(
+  mtry       = seq(3, 9, by = 2),
+  node_size  = c(25, 50, 100, 150, 200),
+  OOB_RMSE   = 0
+)
+
+
+for(i in 1:nrow(hyper_grid)) {
+  
+  # train model
+  model <- ranger(
+    formula         = logMedVal ~ ., 
+    data            = ca.train, 
+    num.trees       = 500,
+    mtry            = hyper_grid$mtry[i],
+    min.node.size   = hyper_grid$node_size[i],
+    seed            = 345
+  )
+  
+  # add OOB error to grid
+  hyper_grid$OOB_RMSE[i] <- sqrt(model$prediction.error)
+}
+
+(oo = hyper_grid %>% 
+  dplyr::arrange(OOB_RMSE) %>%
+  head(10))
+```
+
+```{r}
+rf.fit.final <- ranger(
+    formula         = logMedVal ~ ., 
+    data            = ca.train, 
+    num.trees       = 500,
+    mtry            = oo[1,]$mtry,
+    min.node.size   = oo[1,]$node_size
+    )
+
+
+yhat.rf = predict(rf.fit.final, data = ca.test)$predictions
+(var(ca.test$logMedVal - yhat.rf))
+```

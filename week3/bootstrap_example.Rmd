@@ -1,0 +1,172 @@
+---
+title: "Boostrap Example"
+author: "Mladen Kolar"
+date: ""
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = TRUE)
+options(digits=3)
+```
+
+## Minimum Variance Portfolio
+
+We revisit example from Section 5.2 of ISLR.
+
+Given two assets $X$ and $Y$, we want to invest $\alpha$ 
+fraction of our money in $X$ and the remaining $1-\alpha$ in $Y$.
+We want to choose $\alpha$ so that the portfolio
+\[
+ P = \alpha X + (1-\alpha)Y
+\]
+has the minimum variance. The choice of $\alpha$ that makes 
+the variance ${\rm Var}(P)$ the smallest is
+\[
+\alpha= \frac{\sigma_Y^2 - \sigma_{XY}}{\sigma_X^2 + \sigma_Y^2 - 2\sigma_{XY}},
+\]
+where $\sigma_X^2 = {\rm Var}(X)$, $\sigma_Y^2 = {\rm Var}(Y)$, and $\sigma_{XY} = {\rm Cov}(X, Y)$.
+
+We will estimate the unknown quantitites in the equation above
+to obtain $\hat \alpha$. We would also like to estimate the standard
+deviation for $\hat \alpha$. 
+
+
+The following function will generate pairs of observations from $X$ and $Y$. 
+We set $\sigma_X^2 = 1$, $\sigma_Y^2 = 1.25$, and $\sigma_{XY} = 0.5$.
+
+```{r}
+library(MASS)
+generate.data = function(n=100){
+  # Parameters for bivariate normal distribution
+  mu <- c(0,0) # Mean
+  sigma <- matrix(c(1, 0.5, 0.5, 1.25), 2) # Covariance matrix
+  data = mvrnorm(n, mu = mu, Sigma = sigma)
+  colnames(data) <- c('x', 'y')
+  as.data.frame(data)
+}
+```
+
+The following function computes $\hat \alpha$ based on observations in the 
+data frame `data`. The vector `index` indicates which rows of the data should 
+be used for computation.
+```{r}
+alpha.fn = function (data, index) {
+  X = data$x[ index ]
+  Y = data$y[ index ]
+  var.x = var(X) 
+  var.y = var(Y)
+  cov.xy = cov(X, Y)
+  alpha = ( var.y - cov.xy ) / ( var.x + var.y - 2 * cov.xy )
+  return(alpha)
+}
+```
+
+Let us now generate, a sample and compute $\hat \alpha$.
+For reproducibility, we set the seed. 
+```{r}
+set.seed(132)
+data.init = generate.data(100)
+alpha.fn(data.init, 1:100)
+```
+
+Now let us repeat this process 1000 times.
+```{r}
+alpha.hat = double(1000)
+for(i in 1:1000) {
+  data = generate.data(100)
+  alpha.hat[i] = alpha.fn(data, 1:100)
+}
+hist(alpha.hat, breaks=50, col='cyan', xlim = c(0.3, 0.9))
+abline(v=0.6, col='red', lwd=2)
+```
+
+The problem is that we only get one sample, and can compute only one estimate of $\hat \alpha$.
+
+Let us now run bootstrap.
+Here is an estimate from one bootstrap sample.
+```{r}
+alpha.fn(data.init, sample(100, 100, replace=T))
+```
+
+
+```{r}
+alpha.boot = double(1000)
+for(i in 1:1000) {
+  alpha.boot[i] = alpha.fn(data.init, sample(100, 100, replace=T))
+}
+hist(alpha.boot, breaks=50, col='orange', xlim = c(0.3, 0.9))
+abline(v=0.6, col='red', lwd=2)
+```
+
+We can see that histograms are quite similar, illustrating that the bootstrap distribution
+well approximates the sampling distribution.
+```{r}
+par(mfrow=c(1,2))
+hist(alpha.hat, breaks=50, col='cyan', xlim = c(0.3, 0.9))
+abline(v=0.6, col='red', lwd=2)
+hist(alpha.boot, breaks=50, col='orange', xlim = c(0.3, 0.9))
+abline(v=0.6, col='red', lwd=2)
+```
+
+```{r}
+boxplot(data.frame(True=alpha.hat, Bootstrap=alpha.boot), col=c('cyan','orange'))
+abline(h=0.6, col='red')
+```
+
+Based on the bootstrap distribution, we can compute standard deviation of 
+$\hat \alpha$
+```{r}
+c( sd(alpha.hat), sd(alpha.boot) )    
+```
+
+or obtain confidence intervals.
+
+CI based on the sampling distribution:
+```{r}
+quantile(alpha.hat, probs = c(.025, .975))    
+```
+
+Bootstrap CI:
+```{r}
+quantile(alpha.boot, probs = c(.025, .975)) 
+```
+
+We do not need to manually write a for-loop to run the bootstrap.
+
+```{r}
+library(boot)
+out = boot(data.init, alpha.fn, R=1000)
+print(out)
+```
+
+```{r}
+boot.ci(out)
+```
+
+
+
+## Linear Regression
+
+```{r}
+data = read.csv('UsedCars_small.csv')
+
+plot(data$mileage, data$price, xlab='mileage', ylab='price')
+lm.fit = lm(price~mileage, data)
+abline(lm.fit, col='red', lwd=2)
+```
+
+```{r}
+summary(lm.fit)$coef
+```
+
+
+Bootstrap estimate
+```{r}
+usedcars.coef.fn = function(data, index) {
+  return( coef(lm(price~mileage, data=data, subset=index)) )
+} 
+
+boot(data, usedcars.coef.fn, R=1000)
+```
