@@ -1,0 +1,428 @@
+---
+title: "Accidents data set"
+author: ""
+date: ''
+output: 
+  html_document: default
+  pdf_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = TRUE)
+options(digits=6)
+options(width=180)
+```
+
+
+# Description
+
+In the event of a car accident, there may be limited resources available for dealing with the
+ensuing property damage and injuries. In particular, there may be a limited number of people available 
+with the ability to deliver high end medical attention if serious injuries have resulted from the accident.
+It would be useful if we could predict whether or not a serious injury resulted from the
+accident at the time the accident is reported. This could help us decide what kind of medical
+personnel should be sent out initially. To this end, 42,183 observations have been collected on
+automobile accidents. For each accident you have additional type of information, such as day of week, weather conditions, and road type.
+
+- `HOUR_I_R`: 1 = rush hour, 0 = not (rush = 6-9 am, 4-7 pm)
+- `ALCHL_I`: Alcohol involved = 1, not involved = 2
+- `ALIGN_I`: 1 = straight, 2 = curve
+- `STRATUM_R`: 1 = NASS Crashes Involving At Least One Passenger Vehicle (i.e., A Passenger Car, Sport Utility Vehicle, Pickup Truck Or Van) Towed Due To Damage From The Crash Scene And No Medium Or Heavy Trucks Are Involved. 0 = not
+- `WRK_ZONE`: 1= yes, 0= no
+- `WKDY_I_R`: 1=weekday, 0=weekend
+- `INT_HWY`: Interstate? 1=yes, 0= no 
+- `LGTCON_I_R`:	Light conditions - 1=day, 2=dark (including dawn/dusk), 3=dark, but lighted,4=dawn or dusk
+- `MANCOL_I`: 0=no collision, 1=head-on, 2=other form of collision
+- `PED_ACC_R`: 1=pedestrian/cyclist involved, 0=not
+- `RELJCT_I_R`: 1=accident at intersection/interchange, 0=not at intersection
+- `REL_RWY_R`: 1=accident on roadway, 0=not on roadway
+- `PROFIL_I_R`: 1= level, 0=other
+- `SPD_LIM`: Speed limit, miles per hour 
+- `SUR_CON`: Surface conditions (1=dry, 2=wet, 3=snow/slush, 4=ice, 5=sand/dirt/oil, 8=other, 9=unknown)
+- `TRAF_CON_R`: Traffic control device: 0=none, 1=signal, 2=other (sign, officer, ...)
+- `TRAF_WAY`: 1=two-way traffic, 2=divided hwy, 3=one-way road
+- `WEATHER_R`: 1=no adverse conditions, 2=rain, snow or other adverse condition
+- `INJURY`: 1 = yes, 0 = no
+
+# Load data and packages
+
+```{r message=FALSE}
+library(dplyr)
+library(rpart)
+library(rpart.plot)
+library(xgboost)
+```
+
+Download the data:
+
+\small
+```{r}
+if (!file.exists("Accidents.csv"))
+    download.file(
+    'https://github.com/ChicagoBoothML/MLClassData/blob/master/TransportAccidents/Accidents.csv?raw=true',
+    'Accidents.csv')
+accidents_df = read.csv("Accidents.csv")
+
+n = nrow(accidents_df)
+
+accidents_df$INJURY = rep(1, n)
+accidents_df$INJURY[accidents_df$MAX_SEV_IR == 0] = 0
+drops = c("MAX_SEV_IR")
+accidents_df = accidents_df[, !(names(accidents_df) %in% drops)]
+
+accidents_df <- mutate_all(accidents_df, as.factor)
+```
+
+\normalsize
+
+Next, we split data into train and test set. 
+80% of observations are kept in the training set.
+
+```{r}
+set.seed(1)
+train_ind = sample.int(n, floor(0.8*n))
+accidents_df_train = accidents_df[train_ind,]
+accidents_df_test = accidents_df[-train_ind,]
+```
+
+
+# Predicting majority class
+
+Without any information, we can think of accidents with injuries and 
+without injuries as i.i.d. Bernoulli(p).  Our best guess for p is fraction 
+of accidents with injuries out of all injuries.
+
+Table showing number of positive and negative examples:
+```{r}
+(tb_INJURY_train = table(accidents_df_train$INJURY))
+```
+
+Estimated probability of injury
+```{r}
+p_INJURY = tb_INJURY_train["1"] / (sum(tb_INJURY_train)); print(p_INJURY)
+```
+
+It seems that the number of accidents with injury and without an injury is about the same.
+There are a bit more accidents with injury. Let us see what happens if we predict that every
+accident in the test set involves an injury.
+
+```{r}
+tb_INJURY_test = table(predictions = rep(1, nrow(accidents_df_test)), 
+                       actual = accidents_df_test$INJURY)
+rownames(tb_INJURY_test) = c("predict_INJURY")
+print(tb_INJURY_test)
+```
+
+Accuracy of this approach would be
+```{r}
+tb_INJURY_test[1, "1"] / (sum(tb_INJURY_test))
+```
+
+We observe that both sets have balanced observations.
+
+
+# Initial fit
+
+We start by creating a big tree. 
+```{r}
+big_tree = rpart(INJURY~., data=accidents_df_train, 
+                 control=rpart.control(minsplit=10,  
+                                       cp=0.0001,    
+                                       xval=10)      
+                 )
+```
+
+
+Next, we investigate `cptable` to find the a good value for the cp parameter
+
+```{r}
+plotcp(big_tree)
+```
+
+This is a strange looking error curve.... ????
+
+Here is the cp table:
+```{r}
+cptable = printcp(big_tree)
+```
+
+Let us find the cp parameter with the smallest cv-errror.
+```{r}
+index_cp_min = which.min(cptable[,"xerror"])
+(cp_min = cptable[ index_cp_min, "CP" ])   
+```
+
+We use this cp value to prune the big tree.
+```{r}
+optimal.tree = prune(big_tree, cp=cp_min)
+rpart.plot(optimal.tree)
+```
+
+
+The following command will obtain predictions for the tree.
+It directly outputs the class label of the test examples.
+```{r}
+yhat = predict(optimal.tree, accidents_df_test, type="class")
+```
+
+The optimal tree has the following accuracy:
+```{r}
+mean(yhat == accidents_df_test$INJURY)
+```
+and the corresponding confusion matrix
+```{r}
+tb_tree = table(predictions = yhat, 
+                actual = accidents_df_test$INJURY)  
+rownames(tb_tree) = c("predict_NO_INJURY", "predict_INJURY")
+print(tb_tree)
+```
+
+WE ARE ROCK STARS!!!!
+
+... hold on ... 
+
+`NO_INJ_I` is just opposite of `INJURY`...
+
+... what a silly mistake.
+
+
+
+We need to be careful not to include variables that are
+related to $Y$, but that are not useful for prediction.
+
+Let us remove variables that essentially the same information as `INJURY`.
+```{r}
+drops = c("MAX_SEV_IR", "FATALITIES", "PRPTYDMG_CRASH", "NO_INJ_I", "INJURY_CRASH", "VEH_INVL")
+accidents_df = accidents_df[, !(names(accidents_df) %in% drops)]
+accidents_df_train = accidents_df_train[, !(names(accidents_df_train) %in% drops)]
+accidents_df_test = accidents_df_test[, !(names(accidents_df_test) %in% drops)]
+```
+
+# Second fit
+
+```{r}
+big_tree = rpart(INJURY~., data=accidents_df_train, 
+                 control=rpart.control(minsplit=10,  
+                                       cp=0.0001,    
+                                       xval=10)      
+                 )
+plotcp(big_tree)
+```
+
+We will find the largest cp that gives us estimate of the cross-validation error 
+below the horizontal line on the plot. That is, we use the 1sd error rule.
+```{r}
+cptable = big_tree$cptable
+index_cp_min = which.min(cptable[,"xerror"])
+cp_min = cptable[ index_cp_min, "CP" ]  
+val_h = cptable[index_cp_min, "xerror"] + cptable[index_cp_min, "xstd"]
+index_cp_std = Position(function(x) x < val_h, cptable[, "xerror"])
+(cp_std = cptable[ index_cp_std, "CP" ])
+```
+
+Subsequently, we prune the tree and make predictions.
+```{r}
+optimal.tree = prune(big_tree, cp=cp_std)
+rpart.plot(optimal.tree)
+```
+
+```{r}
+yhat = predict(optimal.tree, accidents_df_test, type="class")
+```
+
+The optimal tree has the following accuracy:
+```{r}
+mean(yhat == accidents_df_test$INJURY)
+```
+and the corresponding confusion matrix
+```{r}
+tb_tree = table(predictions = yhat, 
+                actual = accidents_df_test$INJURY)  
+rownames(tb_tree) = c("predict_NO_INJURY", "predict_INJURY")
+print(tb_tree)
+```
+
+
+# Let's think again
+
+If we care about making decisions whether to dispatch highly skillful medical staff, some 
+information is not going to be available to us. For example, we may know if it is a rush hour or not,
+however, we may lack information about whether alcohol was involved or not. It is important to
+make sure that variables used to build a classifier are actually available at the time a classifier
+is used.
+
+I will drop the following variables from creating a classifies:
+`ALCHL_I`, `STRATUM_R`, `MANCOL_I`, `PED_ACC_R`, `SUR_CON`, `TRAF_CON_R`
+
+```{r}
+drops = c("ALCHL_I", "STRATUM_R", "MANCOL_I", "PED_ACC_R", "SUR_CON", "TRAF_CON_R")
+accidents_df = accidents_df[, !(names(accidents_df) %in% drops)]
+accidents_df_train = accidents_df_train[, !(names(accidents_df_train) %in% drops)]
+accidents_df_test = accidents_df_test[, !(names(accidents_df_test) %in% drops)]
+```
+
+# Decision Trees
+
+We start by creating a big tree. 
+```{r}
+big_tree = rpart(INJURY~., data=accidents_df_train, 
+                 control=rpart.control(minsplit=10,  
+                                       cp=0.0001,    
+                                       xval=10)      
+                 )
+plotcp(big_tree)
+cptable = big_tree$cptable
+index_cp_min = which.min(cptable[,"xerror"])
+cp_min = cptable[ index_cp_min, "CP" ]  
+val_h = cptable[index_cp_min, "xerror"] + cptable[index_cp_min, "xstd"]
+index_cp_std = Position(function(x) x < val_h, cptable[, "xerror"])
+(cp_std = cptable[ index_cp_std, "CP" ])
+optimal.tree = prune(big_tree, cp=cp_std)
+rpart.plot(optimal.tree)
+```
+
+
+
+The optimal tree has the following accuracy:
+```{r}
+phat.tree = predict(optimal.tree, accidents_df_test)[,2]
+yhat = predict(optimal.tree, accidents_df_test, type="class")
+mean(yhat == accidents_df_test$INJURY)
+```
+and the corresponding confusion matrix
+```{r}
+tb_tree = table(predictions = yhat, 
+                actual = accidents_df_test$INJURY)  
+rownames(tb_tree) = c("predict_NO_INJURY", "predict_INJURY")
+print(tb_tree)
+```
+
+
+# Boosting
+
+Convert data to a matrix.
+```{r}
+ X = Matrix::sparse.model.matrix(INJURY ~ ., data=accidents_df)[,-1]
+X.train = X[train_ind,]
+X.test = X[-train_ind,]
+Y.train = as.numeric(accidents_df_train$INJURY)-1
+```
+
+
+We fit boosting models for a few different settings.
+```{r}
+hyper_grid_xgb <- expand.grid(
+  shrinkage = c(.01, .1),         ## controls the learning rate
+  interaction.depth = c(1, 2, 4), ## tree depth
+  bag.fraction = c(.5, .65, .8),  ##  percent of training data to sample for each tree
+  optimal_trees = 0,              # a place to dump results
+  min_RMSE = 0                    # a place to dump results
+)
+```
+
+
+Fitting
+```{r message=F, warning=F, error=F}
+for(i in 1:nrow(hyper_grid_xgb)) {
+  (i)
+  # create parameter list
+  params <- list(
+    eta = hyper_grid_xgb$shrinkage[i],
+    max_depth = hyper_grid_xgb$interaction.depth[i],
+    subsample = hyper_grid_xgb$bag.fraction[i]
+  )
+   
+  # reproducibility
+  set.seed(41654)
+  
+  # train model
+  xgb.tune <- xgb.cv(
+    params               = params,
+    data                 = X.train,
+    label                = Y.train,
+    nrounds              = 5000,
+    nfold                = 5,
+    objective            = "binary:logistic",
+    verbose              = 0,
+    verbosity            = 0,
+    nthread              = 5,
+    early_stopping_rounds = 10     # stop if no improvement for 10 consecutive trees
+  )
+  
+  # add min training error and trees to grid
+  hyper_grid_xgb$optimal_trees[i] <- which.min(xgb.tune$evaluation_log$test_logloss_mean)
+  hyper_grid_xgb$min_RMSE[i] <- min(xgb.tune$evaluation_log$test_logloss_mean)  
+}
+```
+
+
+```{r}
+(oo = hyper_grid_xgb %>%
+      dplyr::arrange(min_RMSE) %>%
+      head(10))
+```
+
+Refit the best model
+```{r message=F, warning=F, error=F}
+# parameter list
+params <- list(
+  eta = oo[1,]$shrinkage,
+  max_depth = oo[1,]$interaction.depth,
+  subsample = oo[1,]$bag.fraction
+)
+
+# train final model
+xgb.fit.final <- xgboost(
+  params = params,
+  data = X.train,
+  label = Y.train,
+  nrounds = oo[1,]$optimal_trees,
+  objective = "binary:logistic",
+  verbose = 0,
+  verbosity = 0
+)
+```
+
+Predict on new data:
+```{r}
+phat.xgb = predict(xgb.fit.final, newdata=X.test)
+yhat = rep(1, nrow(X.test))
+yhat[phat.xgb < 0.5] = 0
+mean(yhat == accidents_df_test$INJURY)
+```
+and the corresponding confusion matrix
+```{r}
+tb_tree = table(predictions = yhat, 
+                actual = accidents_df_test$INJURY)  
+rownames(tb_tree) = c("predict_NO_INJURY", "predict_INJURY")
+print(tb_tree)
+```
+
+View variable importance plot
+```{r}
+mat <- xgb.importance(feature_names = colnames(X.train), model = xgb.fit.final)
+xgb.plot.importance(importance_matrix = mat) 
+```
+
+
+# ROC curves
+
+```{r}
+library(ROCR)
+
+pred = prediction(phat.xgb, accidents_df_test$INJURY)
+perf = performance(pred, measure = "tpr", x.measure = "fpr")
+plot(perf, col = 1, lwd = 2,
+     main= 'ROC curve', xlab='FPR', ylab='TPR', cex.lab=1)
+
+pred = prediction(phat.tree, accidents_df_test$INJURY)
+perf = performance(pred, measure = "tpr", x.measure = "fpr")
+plot(perf, add = T, col = i, lwd = 2)
+abline(0,1,lty=2)
+legend("topleft",legend=c('xgb', 'tree'), col=1:2, lwd=2)
+```
+
+
+

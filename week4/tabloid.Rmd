@@ -1,0 +1,568 @@
+---
+title: "Tabloid data set"
+author: ""
+date: ''
+output: 
+    pdf_document:
+        number_sections: true
+        includes:
+            in_header: mystyles.sty
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = TRUE)
+options(digits=3)
+```
+
+# Description
+
+A large retailer wants to explore the predictability of response to a
+tabloid mailing.
+
+\sk 
+
+If they mail a tabloid to a customer in their data-base, can they
+predict whether or not the customer will respond by making a
+purchase.
+
+\sk 
+
+The dependent variable is 1 if they buy something, 0 if they do not.
+
+\sk
+
+They tried to come up with x’s based on past purchasing behavior.
+
+\sk
+
+The Predictive Analytics team builds a model for \bl the probability the customer responds \bk given \rd information about the customer\bk.
+
+\sk
+
+What information about a customer do they use?
+
+- `nTab`: number of past orders.
+- `moCbook`: months since last order.
+- `iRecMer1`: 1/months since last order in merchandise category 1.
+- `llDol`: log of the dollar value of past purchases.
+
+The data for these variables is obtained from the companies
+operational data base.
+
+
+# Preprocessing
+
+We download the data and preprocess it first
+
+```{r}
+if (!file.exists("Tabloid_test.csv"))
+   download.file(
+       'https://github.com/ChicagoBoothML/MLClassData/raw/master/Tabloid/Tabloid_test.csv',
+       'Tabloid_test.csv')
+
+if (!file.exists("Tabloid_train.csv"))
+   download.file(
+       'https://github.com/ChicagoBoothML/MLClassData/raw/master/Tabloid/Tabloid_train.csv',
+       'Tabloid_train.csv')
+
+
+td = read.csv("Tabloid_train.csv")
+td_validation = read.csv("Tabloid_test.csv")
+
+td$purchase = as.factor(td$purchase)
+td_validation$purchase = as.factor(td_validation$purchase)
+```
+
+\newpage
+
+
+
+# Summary statistics
+
+```{r}
+summary(td)
+```
+
+Notice that the percentage of households that make a purchase is pretty small!
+
+\sk
+
+$258/10000 = 0.0258$
+
+\sk
+
+Illustration of how `nTab` is related to `responders`.  
+```{r fig.width=10, fig.height=5}
+par(mfrow=c(1,2))
+hist(td[td$purchase==0, "nTab"], breaks=40, col="red", 
+     main="nonresponders", xlab="nTab", xlim=c(0,85))
+hist(td[td$purchase==1, "nTab"], breaks=40, col="blue", 
+     main="responders", xlab="nTab", xlim=c(0,85))
+```
+
+\newpage
+
+Here is `Y` plotted vs. each of the four `X`'s
+
+\sk
+```{r fig.width=8, fig.height=8}
+par(mfrow=c(2,2), mar=c(3,3,3,1), mgp=c(2,1,0)) 
+plot(nTab~purchase,td,col=c("red", "blue"))
+plot(moCbook~purchase,td,col=c("red", "blue"))
+plot(iRecMer1~purchase,td,col=c("red", "blue"))
+plot(llDol~purchase,td,col=c("red", "blue"))
+```
+
+
+
+
+
+
+\newpage
+# Fit models
+
+We fit
+
+* logistic regression
+* random forest model
+* boosting
+
+```{r message=FALSE}
+library(caret)
+library(tree)
+library(ranger)
+library(xgboost)
+```
+
+I am creating a list to store results of  all models.
+```{r}
+phat.list = list() #store the test phat for the different methods here
+```
+
+
+## Logistic regression
+
+We fit a logistic regression model using all variables
+```{r}
+lgfit = glm(purchase~., td, family=binomial)
+print(summary(lgfit))
+```
+
+Predictions are stored for later analysis.
+Note that we use `type="response"` which specifies the  type of prediction used. 
+For a default binomial model the default predictions are of log-odds (probabilities on logit scale).
+By using `type = "response"`, we obtain the predicted probabilities.
+```{r}
+phat = predict(lgfit, td_validation, type="response")
+phat.list$logit = matrix(phat,ncol=1) 
+```
+
+\newpage
+
+## Random Forest
+
+We fit random forest models for a few different settings.
+
+```{r}
+p=ncol(td)-1
+
+hyper_grid_rf <- expand.grid(
+  mtry       = c(p, ceiling(sqrt(p))),
+  node_size  = c(5, 10, 20)
+)
+
+# we will store phat values here
+phat.list$rf = matrix(0.0, nrow(td_validation), nrow(hyper_grid_rf))  
+
+for(i in 1:nrow(hyper_grid_rf)) {
+  # train model
+  rf.model <- ranger(
+    formula         = purchase~.,
+    data            = td, 
+    num.trees       = 250,
+    mtry            = hyper_grid_rf$mtry[i],
+    min.node.size   = hyper_grid_rf$node_size[i],
+    probability     = TRUE, 
+    seed            = 99
+  )   
+   
+   # predict for random forest returns
+   # a matrix of class probabilities 
+   #    one column for each class and one row for each input
+   # we want to record probability for class=1, 
+   # which is the second column of the output
+   phat = predict(rf.model, data=td_validation)$predictions[,2]
+   phat.list$rf[,i]=phat
+}
+```
+
+\newpage
+
+## Boosting
+
+
+Remember that we need to put our data into a suitable form.
+
+```{r}
+X.train = as.matrix( td[,-1] )
+Y.train = as.numeric(td$purchase)-1
+X.validation = as.matrix( td_validation[,-1] )
+Y.validation = as.numeric(td_validation$purchase) - 1
+```
+
+We fit boosting models for a few different settings.
+
+```{r}
+hyper_grid_xgb <- expand.grid(
+  shrinkage = c(.01, .1),        ## controls the learning rate
+  interaction.depth = c(1, 2, 4), ## tree depth
+  nrounds = c(1000, 3000)         ## number of trees
+)
+
+# we will store phat values here
+phat.list$boost = matrix(0.0,nrow(td_validation),nrow(hyper_grid_xgb))
+```
+
+
+Fitting
+```{r message=F, warning=F, error=F}
+for(i in 1:nrow(hyper_grid_xgb)) {
+  # create parameter list
+  params <- list(
+    eta = hyper_grid_xgb$shrinkage[i],
+    max_depth = hyper_grid_xgb$interaction.depth[i]
+  )
+   
+  # reproducibility
+  set.seed(4776)
+  
+  # train model
+  xgb.model <- xgboost(
+    data      = X.train,
+    label     = Y.train,
+    params    = params,
+    nrounds   = hyper_grid_xgb$nrounds[i],
+    objective = "binary:logistic",     # for regression models
+    verbose   = 0,                     # silent
+    verbosity = 0                      # silent
+  )
+   
+  phat = predict(xgb.model, newdata=X.validation)
+  phat.list$boost[,i] = phat
+}
+```
+
+\newpage
+
+# Analysis of results
+
+## Misclassification rate
+
+Let us first look at misclassification rate.
+
+The following function computes the confusion matrix
+from the vector of true class labels `y` and a vector
+of estimated probabilities. The probabilities are converted
+into predicted class labels using a threshold `thr`.
+
+```{r}
+# y should be 0/1
+# phat are probabilities obtained by our algorithm 
+# thr is the cut off value - everything above thr is classified as 1
+getConfusionMatrix = function(y,phat,thr=0.5) {
+   yhat = as.factor( ifelse(phat > thr, 1, 0) )
+   confusionMatrix(yhat, y)
+}
+```
+
+This function computes the misclassification rate
+from the vector of true class labels `y` and a vector
+of estimated probabilities. The probabilities are converted
+into predicted class labels using a threshold `thr`.
+
+```{r}
+# y should be 0/1
+# phat are probabilities obtained by our algorithm 
+# thr is the cut off value - everything above thr is classified as 1
+loss.misclassification.rate = function(y, phat, thr=0.5) 
+   1 - getConfusionMatrix(y, phat, thr)$overall[1]
+```
+
+For **logistic regression** we have:
+```{r}
+cfm <- getConfusionMatrix(td_validation$purchase, phat.list$logit[,1], 0.5)
+print(cfm, printStats = F)
+cat('misclassification rate = ', 
+    loss.misclassification.rate(td_validation$purchase, phat.list[[1]][,1], 0.5), 
+    '\n')
+```
+
+\newpage
+
+For **random forest** we have:
+```{r}
+nrun = nrow(hyper_grid_rf)
+for(j in 1:nrun) {
+  print(hyper_grid_rf[j,])
+  cfm <- getConfusionMatrix(td_validation$purchase, phat.list[[2]][,j], 0.5)   
+  print(cfm, printStats = F)
+  cat('misclassification rate = ', 
+      loss.misclassification.rate(td_validation$purchase, phat.list[[2]][,j], 0.5), 
+      '\n')
+}
+```
+
+\newpage
+
+For **boosting** we have:
+```{r}
+nrun = nrow(hyper_grid_xgb)
+for(j in 1:nrun) {
+  print(hyper_grid_xgb[j,])
+  cfm <- getConfusionMatrix(td_validation$purchase, phat.list[[3]][,j], 0.5)
+  print(cfm, printStats = F)
+  cat('misclassification rate = ', 
+      loss.misclassification.rate(td_validation$purchase, phat.list[[3]][,j], 0.5), 
+      '\n')
+}
+```
+
+\newpage
+
+
+This is strange... There seems to be fit in the model.
+```{r fig.width=4, fig.height=4}
+par(mar=c(3,3,3,1), mgp=c(2,1,0)) 
+phat = predict(lgfit, newdata=td, type="response")
+plot(phat~td$purchase, col=c("red","blue"), 
+     xlab="purchase", ylab="phat", ylim=c(0,1.05), cex.text=0.7)
+```
+
+
+\newpage
+
+The idea behind the tabloid example is that if we can predict who
+will buy we can target those customers and send them the tabloid.
+
+
+To get an idea of how well our model is working, we can imagine
+choosing a customer from the data set to mail to first - did they
+buy?
+
+We can look at the y value to see if they bought.
+
+
+Whom would you mail to first?
+
+You could mail the first 40 people in your database.
+
+\small
+```{r}
+td$phat = phat
+td[1:40, c("purchase", "phat")]
+```
+
+\normalsize \sk
+
+Out of the first 40, there is only one purchase.
+
+\newpage
+
+If you believe your model, you might mail to the household with
+the largest $\hat p$ (estimated prob of buying) first. 
+Then you would mail to the household with the second largest $\hat p$
+and so on.
+
+
+\small
+```{r}
+td$phat = phat
+sorted_phat = order(-phat)
+td[sorted_phat[1:40], c("purchase", "phat")]
+```
+
+\normalsize
+\sk
+You got 16 purchases out of the first 40 customers you targeted.
+Using only 40/10000 = 0.004 of the data we got 16/258 = .062 of
+the purchases!
+
+
+
+
+
+
+
+
+
+\newpage
+
+## Deviance
+
+The following function is used to compute the deviance of a model.
+
+```{r}
+# deviance loss function
+# y should be 0/1
+# phat are probabilities obtained by our algorithm 
+# wht shrinks probabilities in phat towards .5 
+#   this helps avoid numerical problems --- don't use log(0)!
+lossf = function(y,phat,wht=0.0000001) {
+   if(is.factor(y)) y = as.numeric(y)-1
+   phat = (1-wht)*phat + wht*.5
+   py = ifelse(y==1, phat, 1-phat)
+   return(-2*sum(log(py)))
+}
+```
+
+
+Plot validation set loss --- deviance:
+
+```{r fig.width=8, fig.height=8}
+lossL = list()
+nmethod = length(phat.list)
+for(i in 1:nmethod) {
+   nrun = ncol(phat.list[[i]])
+   lvec = rep(0,nrun)
+   for(j in 1:nrun) lvec[j] = lossf(td_validation$purchase, phat.list[[i]][,j])
+   lossL[[i]]=lvec; names(lossL)[i] = names(phat.list)[i]
+}
+lossv = unlist(lossL)
+plot(lossv, ylab="out-of-sample loss", type="n")
+nloss=0
+for(i in 1:nmethod) {
+   ii = nloss + 1:ncol(phat.list[[i]])
+   points(ii,lossv[ii],col=i,pch=17)
+   nloss = nloss + ncol(phat.list[[i]])
+}
+legend("topright",legend=names(phat.list),col=1:nmethod,pch=rep(17,nmethod))
+```
+
+From each method class, we choose the one that has the lowest error on the validation set.
+
+```{r}
+nmethod = length(phat.list)
+phatBest = matrix(0.0,nrow(td_validation),nmethod) #pick off best from each method
+colnames(phatBest) = names(phat.list)
+for(i in 1:nmethod) {
+   nrun = ncol(phat.list[[i]])
+   lvec = rep(0,nrun)
+   for(j in 1:nrun) lvec[j] = lossf(td_validation$purchase,phat.list[[i]][,j])
+   imin = which.min(lvec)
+   phatBest[,i] = phat.list[[i]][,imin]
+}
+```
+
+
+
+\newpage
+
+## Expected value of a classifier
+
+Let us target everyone with $\hat p > 0.02$
+
+Our **cost/benefit matrix** looks like this
+```{r}
+cost_benefit = matrix(c(0,-0.8,0,39.20), nrow=2)
+print(cost_benefit)
+```
+
+Expected values of targeting is below:
+
+```{r}
+confMat = getConfusionMatrix(td_validation$purchase, phatBest[,1], 0.02)
+print(confMat, printStats = F)
+cat("Expected value of targeting using logistic regression = ", 
+    sum(sum(as.matrix(confMat) * cost_benefit)), "\n")
+```
+
+```{r}
+confMat = getConfusionMatrix(td_validation$purchase, phatBest[,2], 0.02)
+print(confMat, printStats = F)
+cat("Expected value of targeting using random forests = ", 
+    sum(sum(as.matrix(confMat) * cost_benefit)), "\n")
+```
+
+```{r}
+confMat = getConfusionMatrix(td_validation$purchase, phatBest[,3], 0.02)
+print(confMat, printStats = F)
+cat("Expected value of targeting using boosting = ", 
+    sum(sum(as.matrix(confMat) * cost_benefit)), "\n")
+```
+
+\newpage
+
+## ROC curves
+
+Library for plotting various summary curves
+```{r}
+library(ROCR)
+```
+
+```{r fig.width=6, fig.height=6}
+for(i in 1:ncol(phatBest)) {
+   pred = prediction(phatBest[,i], td_validation$purchase)
+   perf = performance(pred, measure = "tpr", x.measure = "fpr")
+   
+   if (i == 1) {
+     plot(perf, col = 1, lwd = 2,
+          main= 'ROC curve', xlab='FPR', ylab='TPR', cex.lab=1)
+   } else {
+     plot(perf, add = T, col = i, lwd = 2)
+   }
+}
+abline(0,1,lty=2)
+legend("topleft",legend=names(phat.list),col=1:nmethod,lty=rep(1,nmethod))
+```
+
+We can also compute AUC (area under the ROC curve).
+
+```{r}
+for(i in 1:ncol(phatBest)) {
+  pred = prediction(phatBest[,i], td_validation$purchase)
+  perf <- performance(pred, measure = "auc")
+  print(paste0("AUC ", names(phat.list)[i], " :: ", perf@y.values[[1]]))
+}
+```
+
+
+\newpage 
+
+## Lift curves
+
+```{r fig.width=6, fig.height=6}
+pred = prediction(phatBest[,1], td_validation$purchase)
+perf = performance(pred, measure = "lift", x.measure = "rpp", lwd=2)
+plot(perf, col=1, ylim=c(0,5))
+abline(h=1, lty=2)
+
+for(i in 2:ncol(phatBest)) {
+   pred = prediction(phatBest[,i], td_validation$purchase)
+   perf = performance(pred, measure = "lift", x.measure = "rpp")
+   plot(perf, add = T, col = i, lwd = 2)
+}
+legend("topright",legend=names(phat.list),col=1:nmethod,lty=rep(1,nmethod), lwd=2)
+```
+
+\newpage
+
+## Cummulative response 
+
+
+```{r fig.width=6, fig.height=6}
+pred = prediction(phatBest[,1], td_validation$purchase)
+perf = performance(pred, measure = "tpr", x.measure = "rpp")
+plot(perf, col=1, ylim=c(0,1),lwd=2)
+abline(h=1, lty=2)
+abline(0,1,lty=2)
+for(i in 2:ncol(phatBest)) {
+   pred = prediction(phatBest[,i], td_validation$purchase)
+   perf = performance(pred, measure = "tpr", x.measure = "rpp")
+   plot(perf, add = T, col = i, lwd = 2)
+}
+legend("bottomright",legend=names(phat.list),col=1:nmethod,lty=rep(1,nmethod),lwd=2)
+```
+
+
