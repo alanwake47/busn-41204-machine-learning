@@ -1,0 +1,504 @@
+---
+title: "BUS41204: Week 4 Review Session"
+author: "JungHo Lee"
+date: "2023-01-28"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE,message = FALSE)
+knitr::opts_chunk$set(fig.width = 6, fig.align="center")
+```
+
+# Plan of Attack
+
+* Review: Classification and Evaluating Classifiers
+* Example: Credit Scoring dataset from Kaggle
+
+# 1. Review: Classification and Evaluating Classifiers
+
+## Classification
+
+Classification is about predicting a qualitative response (category) for an observation. Some popular methods include:
+
+  * $k$-NN 
+  * Logistic Regression
+  * NaiveBayes
+  * Tree-based Methods (Classification Tree, Random Forests, Boosting)
+  * Linear/Quadratic Discriminant Analyses
+  * etc.
+
+## Evaluating Classifiers
+
+### Misclassification 
+
+* Difficult to optimize
+* Too simplistic (reduces performance of a classifier to a single number)
+  + Does not make the distinction between false positive and false negative errors 
+* Does not work well with unbalanced classes
+  + Categorizing all instances to the majority would yield low missclassification rate, but     useless 
+
+### Confusion matrix
+
+* Columns are labeled by actual classes
+* Rows are labeled by predicted classes
+
+```{r , echo=FALSE,  out.width = '70%'}
+knitr::include_graphics("ConfusionMatrix.png")
+```
+
+### Expected Values
+
+* Useful in organizing thinking about data-analytic problems
+
+```{r , echo=FALSE,  out.width = '80%'}
+knitr::include_graphics("workflow.png")
+```
+
+### ROC (Receiver Operating Characteristic) Curve
+
+* Depicts relative trade-offs that a classifier makes between benefits (true
+positives) and costs (false positives).
+* An ideal ROC curve will hug the top left corner, the larger the \emph{are under the (ROC) curve} (AUC), the better the classifier.
+
+  Given $p$ and $\hat{p}$, Consider $k$ classifier $C$ (threshold) such as $C_1=0.1, C_2=0.2,...,C_i=0.5,...,C_k=0.9$
+      
+  Step 1: According to each threshold $C_i$, calculate the related $\text{TPR}_i$ and $\text{FPR}_i$
+  
+  Step 2: Collect these $K$ ( $\text{TPR}_i,\text{FPR}_i$)
+  
+  Step 3: Create the plot of $y=\text{TPR}$ versus $x=\text{FPR}$
+      
+```{r , echo=FALSE,  out.width = '70%'}
+knitr::include_graphics("ROC.png")
+```    
+
+
+
+### Lift Curve
+
+```{r , echo=FALSE,  out.width = '70%'}
+knitr::include_graphics("lift.png")
+```  
+
+* $\text{Lift}=\frac{\frac{TP}{TP+FP}}{\frac{TP+FP}{TP+FP+TN+FN}}$
+* How much the customer conversion is multiplied for a certain percentage of customer contacted
+* Closely related with the cumulative response curve
+
+  
+# 2. CreditSCoring Dataset from Kaggle
+
+## Background 
+Banks play a crucial role in market economies. They decide who can get finance and on what terms and can make or break investment decisions. For markets and society to function, individuals and companies need access to credit. 
+
+Credit scoring algorithms, which make a guess at the probability of default, are the method banks use to determine whether or not a loan should be granted. This competition requires participants to improve on the state of the art in credit scoring, by predicting the probability that somebody will experience financial distress in the next two years.
+
+The goal of this competition is to build a model that borrowers can use to help make the best financial decisions.
+
+## Data Preprocessing
+```{r}
+if (!file.exists("CreditScoring.csv"))
+download.file(
+'https://github.com/ChicagoBoothML/MLClassData/raw/master/GiveMeSomeCredit/CreditScoring.csv',
+'CreditScoring.csv')
+
+train = read.csv("CreditScoring.csv")
+```
+
+```{r}
+dim(train)
+head(train)
+summary(train)
+str(train)
+```
+
+Rename `SeriousDlqin2yrs` to `y` and convert it to a factor.
+```{r}
+library(tidyverse)
+
+df = train %>% rename(y = SeriousDlqin2yrs) %>% mutate(across(y, as.factor))
+```
+
+Get rid of variables `X` (index), `MonthlyIncome` and `NumberOfDependents` as we do not want to deal with NAs.
+```{r}
+df = df %>% select(-c(X, MonthlyIncome, NumberOfDependents))
+str(df)
+```
+Split data into training and validation data:
+```{r}
+set.seed(99)
+
+n=nrow(df)
+ii = sample(n,n/2)
+train_df = df[ii,]
+val_df= df[-ii,]
+```
+
+## Quick Summary Statistics
+
+```{r}
+table(df$y)
+table(train_df$y)
+```
+
+Roughly, 6.7% are delinquent.
+
+```{r}
+plot(age~y, df, col=c('red','blue'), cex.lab=1.4)
+```
+
+## Model Fitting
+
+We will fit: 
+
+* Logistic Regression
+* Random Forest
+* Boosting
+
+```{r}
+phat_list = list() # where the phats will be stored
+```
+
+### Logistic Regression
+
+```{r}
+lg_fit = glm(y~., data=train_df, family=binomial)
+lg_phat = predict(lg_fit, val_df, type='response')
+phat_list$logit = matrix(lg_phat, ncol=1)
+```
+
+### Random Forest
+```{r}
+library(ranger)
+```
+
+```{r}
+p = ncol(df)-1
+
+grid_rf = expand.grid(
+  mtry = c(p, ceiling(sqrt(p))),
+  node_size = c(5, 10, 20)
+)
+
+phat_list$rf = matrix(0, nrow(val_df), nrow(grid_rf)) # where rf phats will be stored
+
+for(i in 1:nrow(grid_rf)){
+    rf_fit = ranger(
+    formula = y~.,
+    data = train_df,
+    num.trees = 1000,
+    mtry = grid_rf$mtry[i], 
+    min.node.size = grid_rf$node_size[i], 
+    probability = TRUE,
+    seed = 99
+  )
+    
+  phat_rf = predict(rf_fit, data=val_df)$predictions[,2]
+  phat_list$rf[,i] = phat_rf
+}
+```
+
+### Boosting
+```{r}
+library(dbarts)
+library(xgboost)
+
+X_train = makeModelMatrixFromDataFrame(train_df[,-1])
+y_train = as.numeric(train_df$y)-1
+X_val = makeModelMatrixFromDataFrame(val_df[,-1])
+y_val = as.numeric(val_df$y)-1
+```
+
+```{r}
+grid_xgb = expand.grid(
+  shrinkage = c(.01, .1), # controls the learning rate
+  interaction.depth = c(1,2,4), # tree depth
+  nrounds = c(1000, 5000) # number of trees
+)
+
+# where boosting phats will be stored
+phat_list$boost = matrix(0, nrow(val_df), nrow(grid_xgb)) 
+```
+
+Fitting boosting:
+```{r}
+for (i in 1:nrow(grid_xgb)){
+  # create param list
+  params = list(
+    eta = grid_xgb$shrinkage[i], # lambda
+    max_depth = grid_xgb$interaction.depth[i] # d
+  )
+  
+  set.seed(4776)
+  
+  xbg_fit = xgboost(
+    data = X_train,
+    label = y_train,
+    params = params,
+    nrounds = grid_xgb$nrounds[1], # number of trees
+    objective = 'binary:logistic',
+    verbose = 0,
+    verbosity = 0
+  )
+  
+  phat_xgb = predict(xbg_fit, newdata=X_val)
+  phat_list$boost[,i] = phat_xgb
+}
+```
+
+## Evaluating Results
+
+### Misclassification Rate
+
+The following function computes the confusion matrix from the vector of true class labels `y` and a vector of estimated probabilities `phat`. The probabilities are converted into predicted class labels using a threshold `thr`.
+
+```{r}
+library(caret)
+```
+
+```{r}
+#' @param y: should be 0/1
+#' @param phat: probabilities obtained by our algorithm
+#' @param thr: threshold: everything above thr will be classified as 1
+#' @return confusion matrix
+get_confusion_matrix = function(y, phat, thr=0.5){
+  yhat = as.factor(ifelse(phat > thr, 1, 0)) # 1 of greater than thr, 0 o.w.
+  confusionMatrix(yhat, y)
+}
+```
+
+This function computes the misclassification rate from the vector of true class labels `y` and a vector of estimated probabilities `phat`. The probabilities are converted into predicted class labels using a threshold `thr`.
+```{r}
+#' @param y: should be 0/1
+#' @param phat: probabilities obtained by our algorithm
+#' @param thr: threshold: everything above thr will be classified as 1
+#' @return misclassification rate
+get_misc_rate = function(y, phat, thr=0.5){
+  1 - get_confusion_matrix(y, phat, thr)$overall[1]
+}
+```
+
+Logistic regression results:
+```{r}
+cfm = get_confusion_matrix(val_df$y, phat_list$logit[,1], 0.5)
+print(cfm, printStats = F)
+```
+```{r}
+cat('misclassification rate = ',
+get_misc_rate(val_df$y, phat_list[[1]][,1], 0.5), '\n')
+```
+
+Random forest:
+```{r}
+nrun = nrow(grid_rf)
+
+for(j in 1:nrun) {
+  print(grid_rf[j,])
+  cfm = get_confusion_matrix(val_df$y, phat_list[[2]][,j], 0.5)
+  print(cfm, printStats = F)
+  cat('misclassification rate = ',
+  get_misc_rate(val_df$y, phat_list[[2]][,j], 0.5), '\n')
+}
+```
+
+Boosting:
+```{r}
+nrun = nrow(grid_xgb)
+
+for(j in 1:nrun) {
+  print(grid_xgb[j,])
+  cfm = get_confusion_matrix(val_df$y, phat_list[[3]][,j], 0.5)
+  print(cfm, printStats = F)
+  cat('misclassification rate = ',
+  get_misc_rate(val_df$y, phat_list[[3]][,j], 0.5), '\n')
+}
+```
+
+### Deviance
+
+* One of the surrogate losses discussed in class
+* Measures the quality of a model by looking at $\hat{P}(Y=y, \mid X=x)$
+
+* Intuition: if $\hat{P}(Y=y, \mid X=x)$ is high, then the observed data is likely under our model. 
+
+The total deviance loss for a dataset $\mathcal{D}$ is given by:
+
+$$
+L(\hat{P}) = \sum_{i \in \mathcal{D}}L(\hat{P}, x_i, y_i) = \sum_{i \in \mathcal{D}} -2\log(P(Y = y_i \mid x_i)).
+$$
+The following function is used to compute the deviance of a model.
+```{r}
+#' @param y: should be 0/1
+#' @param phat: probabilities obtained by our algorithm
+#' @param wht: shrinks probabilities in phat towards .5
+#' this helps avoid numerical problems --- don't use log(0)!
+#' @return deviance loss 
+get_deviance = function(y,phat,wht=1e-7) {
+  if(is.factor(y)) y = as.numeric(y)-1
+  phat = (1-wht)*phat + wht*.5
+  py = ifelse(y==1, phat, 1-phat)
+  return(-2*sum(log(py)))
+}
+```
+
+Plot loss on validation:
+```{r}
+loss_list = list()
+nmethod = length(phat_list)
+
+for(i in 1:nmethod){
+  nrun = ncol(phat_list[[i]])
+  lvec = rep(0,nrun)
+  for(j in 1:nrun){
+    lvec[j] = get_deviance(val_df$y, phat_list[[i]][,j])
+    loss_list[[i]] = lvec
+    names(loss_list)[i] = names(phat_list)[i]
+  }
+}
+
+lossv = unlist(loss_list)
+plot(lossv, ylab="Loss on Validation", type="n")
+nloss=0
+
+for(i in 1:nmethod) {
+  ii = nloss + 1:ncol(phat_list[[i]])
+  points(ii,lossv[ii], col=i, pch=17)
+  nloss = nloss + ncol(phat_list[[i]])
+}
+legend("topright", legend=names(phat_list), col=1:nmethod, pch=rep(17, nmethod))
+```
+
+From each method class, we choose the one that has the lowest error on the validation set.
+```{r}
+phat_best = matrix(0.0,nrow(val_df),nmethod) #pick off best from each method
+colnames(phat_best) = names(phat_list)
+
+for(i in 1:nmethod) {
+  nrun = ncol(phat_list[[i]])
+  lvec = rep(0,nrun)
+  for(j in 1:nrun) lvec[j] = get_deviance(val_df$y,phat_list[[i]][,j])
+    imin = which.min(lvec)
+  phat_best[,i] = phat_list[[i]][,imin]
+}
+```
+
+Each plot relates $\hat{p}$ to `y`. From left to right, $\hat{p}$ is from logit, random forests, and boosting.
+```{r}
+colnames(phat_best) = c("logit", "rf", "boost")
+tempdf = data.frame(phat_best,y = val_df$y)
+
+par(mfrow=c(1,3))
+plot(logit~y, tempdf, ylim=c(0,1), cex.lab=1.4, col=c("red","blue"))
+plot(rf~y, tempdf, ylim=c(0,1), cex.lab=1.4, col=c("red","blue"))
+plot(boost~y, tempdf, ylim=c(0,1), cex.lab=1.4, col=c("red","blue"))
+```
+Boosting and random forests both look pretty good! Both are dramatically better than logit!
+
+### Expected Value
+
+Our cost/benefit matrix looks like this:
+```{r}
+cost_benefit = matrix(c(0,-0.25,0,1), nrow=2)
+print(cost_benefit)
+```
+
+If $\hat{p} > 0.2,$ we will extend credit. Expected values of classifiers is below:
+```{r}
+conf_mat_lg = get_confusion_matrix(val_df$y, phat_best[,1], 0.2) # logit
+print(conf_mat_lg, printStats = F)
+```
+```{r}
+cat("Expected value of targeting using logistic regression = ",
+sum(sum(as.matrix(conf_mat_lg) * cost_benefit)))
+```
+
+```{r}
+conf_mat_rf = get_confusion_matrix(val_df$y, phat_best[,2], 0.2) # rf
+print(conf_mat_rf, printStats = F)
+```
+```{r}
+cat("Expected value of targeting using random forest = ",
+sum(sum(as.matrix(conf_mat_rf) * cost_benefit)))
+```
+
+```{r}
+conf_mat_xgb = get_confusion_matrix(val_df$y, phat_best[,3], 0.2) # boosting
+print(conf_mat_xgb, printStats=F)
+```
+
+```{r}
+cat("Expected value of targeting using boosting = ",
+sum(sum(as.matrix(conf_mat_xgb) * cost_benefit)))
+```
+
+
+### ROC Curves
+
+```{r}
+library(ROCR)
+```
+
+```{r}
+for(i in 1:ncol(phat_best)) {
+  pred = prediction(phat_best[,i], val_df$y)
+  perf = performance(pred, measure = "tpr", x.measure = "fpr")
+  
+  if (i == 1) {
+    plot(perf, col=1, lwd=2,
+    main= 'ROC curve', 
+    xlab='False Positive Rate', 
+    ylab='True Positive Rate')
+  } 
+  
+  else {
+    plot(perf, add=T, col=i, lwd=2)
+  }
+}
+abline(0, 1, lty=2)
+legend("topleft",legend=names(phat_list),col=1:nmethod,lty=rep(1,nmethod))
+```
+We can also compute AUC (area under the ROC curve).
+
+```{r}
+for(i in 1:ncol(phat_best)) {
+  pred = prediction(phat_best[,i], val_df$y)
+  perf = performance(pred, measure = "auc")
+  print(paste0("AUC ", names(phat_list)[i], " :: ", perf@y.values[[1]]))
+}
+```
+
+### Lift Curves
+
+```{r}
+pred = prediction(phat_best[,1], val_df$y)
+perf = performance(pred, measure="lift", x.measure="rpp", lwd=2)
+plot(perf, col=1, ylim=c(0,5))
+abline(h=1, lty=2)
+
+for(i in 2:ncol(phat_best)) {
+  pred = prediction(phat_best[,i], val_df$y)
+  perf = performance(pred, measure="lift", x.measure="rpp")
+  plot(perf, add=T, col=i, lwd=2)
+}
+legend("topright", legend=names(phat_list),col=1:nmethod, lty=rep(1,nmethod), lwd=2)
+```
+
+
+### Cumulative Response
+
+Similar to the ROC curve, the diagonal indicates the baseline. As we target more of the population, we target more of the positive cases. 
+```{r}
+pred = prediction(phat_best[,1], val_df$y)
+perf = performance(pred, measure="tpr", x.measure="rpp")
+plot(perf, col=1, ylim=c(0,1), lwd=2)
+abline(h=1, lty=2)
+abline(0, 1, lty=2)
+
+for(i in 2:ncol(phat_best)) {
+  pred = prediction(phat_best[,i], val_df$y)
+  perf = performance(pred, measure="tpr", x.measure="rpp")
+  plot(perf, add = T, col = i, lwd = 2)
+}
+legend("bottomright", legend=names(phat_list), col=1:nmethod, lty=rep(1,nmethod), lwd=2)
+```
+
