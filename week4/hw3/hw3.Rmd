@@ -9,7 +9,7 @@ output:
 ---
 
 ```{r setup, include = FALSE}
-knitr::opts_chunk$set(eval = FALSE)
+#knitr::opts_chunk$set(eval = FALSE)
 ```
 
 **Due:** end of day Saturday, February 4
@@ -476,6 +476,32 @@ phat.l1.lgfit <- predict(glmnet.fit,
    Predict classification using 0.6072 threshold.
    
    What can we see from the confusion matrices?
+   
+```{r}
+# calculate threshold as average probability of being retained
+threshold <- mean(phat.lgfit.selected)
+
+# use threshold to predict binary classification
+pred.lgfit.selected <- ifelse(phat.lgfit.selected > threshold, 1, 0)
+pred.l1.lgfit <- ifelse(phat.l1.lgfit > threshold, 1, 0)
+```
+
+
+```{r}
+get_confusion_matrix = function(y, phat, thr=0.5){
+  yhat = as.factor(ifelse(phat > thr, 1, 0)) # 1 of greater than thr, 0 o.w.
+  confusionMatrix(yhat, y)
+}
+```
+
+
+```{r}
+get_confusion_matrix(df.test$Retained.in.2012.,pred.lgfit.selected,threshold)
+```
+```{r}
+get_confusion_matrix(df.test$Retained.in.2012.,pred.l1.lgfit,threshold)
+```
+   From the above confusion matrices, both the Regression and LASSO 
    
 2. Plot ROC curves for the two classifiers and report the area under the curve.
 
