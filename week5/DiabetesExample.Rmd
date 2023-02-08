@@ -1,0 +1,479 @@
+---
+title: "Diabetes Example"
+author: "Mladen Kolar (mkolar@chicagobooth.edu)"
+output: 
+  pdf_document: 
+      includes:
+        in_header: mystyles.sty
+  html_document: default        
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = TRUE)
+knitr::opts_chunk$set(tidy = TRUE, tidy.opts = list(width.cutoff = 60))
+options(digits=6)
+options(width = 180)
+```
+
+We are going to investigate diabetes data from the [LARS paper](https://projecteuclid.org/euclid.aos/1083178935).
+
+These data consist of observations on 442 patients, 
+with the response of interest being a quantitative measure 
+of disease progression one year after baseline.
+
+There are ten baseline variables---age, sex, body-mass index, average blood pressure, and six blood serum measurements.
+
+![](fig/lars_table1.png)
+
+
+The goal is to construct a model that predicted response 
+$y$ from covariates $x_1, x_2, \ldots, x_{10}$.
+
+- the model would produce accurate baseline predictions of response for future patients;
+- the form of the model would suggest which covariates were important factors in disease progression.
+
+
+
+```{r}
+df = read.csv('data.diabetes.csv')
+```
+Note that the covariates are standardized to have zero mean and unit L2 norm.
+
+There are also data with interaction terms (the "quadratic model").
+Here are the standardized data that have 442 rows and 65 columns 
+corresponding to 64 input features and the output y.
+```{r}
+df.x2 = read.csv('data.diabetes.x2.csv')
+```
+
+
+# Subset Selection
+
+We will use the package `bestglm` for 
+an implementation of best subset selection in generalized linear models.
+See http://www2.uaem.mx/r-mirror/web/packages/bestglm/vignettes/bestglm.pdf
+for more details.
+
+```{r message=F}
+library(bestglm)
+
+set.seed(1)
+```
+
+Structure of the diabetes data
+```{r}
+str(df)
+```
+
+Plots the correlations among all the columns of data.
+```{r}
+library(corrplot) 
+correlations <- cor(df) 
+corrplot(correlations)                 
+```
+
+
+It is always a good idea to check for gross outliers:
+```{r}
+boxplot(df[,-11]) 
+```
+
+
+## Best Subset Selection
+
+The first 6 rows of our data frame.
+\footnotesize
+```{r}
+head(df)
+```
+\normalsize 
+
+We use best subset regression together with BIC to choose the model.
+
+```{r}
+best.subset.model.bic = bestglm(df, 
+                               family = gaussian, 
+                               IC     = "BIC",
+                               method = "exhaustive")
+best.subset.model.bic
+```
+The model has 5 variables.
+
+We can see which variable were included at different stages.
+```{r}
+best.subset.model.bic$Subsets
+```
+The last two columns report `logLikelihood` and `BIC`.   
+The `logLikelihood` is computed on the training data. The higher is better.   
+Notice that `logLikelihood` increases as we add more variables to our model.  
+
+The deviance for the model is equal to $-2 \cdot {\rm logLikelihood}$. The lower is better.   
+`BIC` is equal to ${\rm deviance} + \log(n) \cdot k$ where $k$ is the number selected variables.
+
+We can compute `BIC` from `logLikelihood`.   
+We see that the numbers agree with the last column of the table above.
+
+```{r}
+n = nrow(df)
+-2 * best.subset.model.bic$Subsets$logLikelihood + (0:10)*log(n)
+```
+
+
+```{r}
+dev.plot = -2 * best.subset.model.bic$Subsets$logLikelihood
+bic.plot = best.subset.model.bic$Subsets$BIC
+plot(0:10, dev.plot, lwd=2, col='black', type='p',
+     ylim = c(min(dev.plot), max(bic.plot)),
+     xlab='Subset Size', ylab='Deviance', main='All subsets')
+points(0:10, bic.plot, lwd=2, col='red')
+legend("topright", legend=c("deviance", "BIC"), col=c("black", "red"), pch=1)
+```
+
+
+\newpage
+
+Let us now choose the model with cross-validation.
+
+
+```{r}
+best.subset.model.cv = bestglm(df, 
+                               family = gaussian, 
+                               IC     = "CV",
+                               CVArgs = list(Method="HTF", K=10, REP=1),
+                               method = "exhaustive")
+best.subset.model.cv
+```
+
+
+We can see which variable were included at different stages.
+\footnotesize
+```{r}
+best.subset.model.cv$Subsets
+```
+\normalsize
+
+
+```{r}
+dev.plot = -2 * best.subset.model.cv$Subsets$logLikelihood
+cverrs = best.subset.model.cv$Subsets$CV
+sdCV = best.subset.model.cv$Subsets$sdCV
+CVLo = cverrs - sdCV
+CVHi = cverrs + sdCV
+k = 0:(length(cverrs)-1)
+plot(k, cverrs, xlab="Subset Size", ylab="CV Error", main='All subsets',
+     ylim=c(min(CVLo),max(CVHi)), type="n")
+points(k, cverrs, cex=2, col="red", pch=16)
+lines(k, cverrs, col="red", lwd=2)
+# plot error bars
+segments(k, CVLo, k, CVHi, col="blue", lwd=2)
+eps = 0.15
+segments(k-eps, CVLo, k+eps, CVLo, col="blue", lwd=2)
+segments(k-eps, CVHi, k+eps, CVHi, col="blue", lwd=2)
+
+indBest = oneSDRule(best.subset.model.cv$Subsets[,c("CV", "sdCV")])
+abline(v=indBest-1, lty=2)
+indMin = which.min(cverrs)
+fmin = sdCV[indMin]
+cutOff = fmin + cverrs[indMin]
+abline(h=cutOff, lty=2)
+indMin = which.min(cverrs)
+abline(v=indMin-1, lty=2)
+
+points(0:10, dev.plot, lwd=2, col='black')
+legend("topright", legend=c("deviance", "CV"), col=c("black", "red"), pch=1)
+```
+
+
+We can compare the selected models using the `modelsummary` package:
+
+```{r}
+library(modelsummary)
+msummary(list('BIC' = best.subset.model.bic$BestModel,
+              'CV' = best.subset.model.cv$BestModel))
+```
+
+
+
+
+# Forward Selection
+
+
+```{r}
+fwd.step.bic = bestglm(df, 
+                       family = gaussian, 
+                       IC     = "BIC",
+                       method = "forward")
+fwd.step.bic
+```
+
+
+```{r}
+fwd.step.bic$Subsets
+```
+```{r}
+dev.plot = -2 * fwd.step.bic$Subsets$logLikelihood
+bic.plot = fwd.step.bic$Subsets$BIC
+plot(0:10, dev.plot, lwd=2, col='black', type='p',
+     ylim = c(min(dev.plot), max(bic.plot)),
+     xlab='Subset Size', ylab='Deviance', main='All subsets')
+points(0:10, bic.plot, lwd=2, col='red')
+legend("topright", legend=c("deviance", "BIC"), col=c("black", "red"), pch=1)
+```
+
+
+
+
+
+
+
+```{r}
+fwd.step.cv = bestglm(df, 
+                      family = gaussian, 
+                      IC     = "CV",
+                      CVArgs = list(Method="HTF", K=10, REP=1),
+                      method = "forward")
+fwd.step.cv
+```
+
+\footnotesize
+```{r}
+fwd.step.cv$Subsets
+```
+\normalsize
+
+```{r}
+dev.plot = -2 * fwd.step.cv$Subsets$logLikelihood
+cverrs = fwd.step.cv$Subsets$CV
+sdCV = fwd.step.cv$Subsets$sdCV
+CVLo = cverrs - sdCV
+CVHi = cverrs + sdCV
+k = 0:(length(cverrs)-1)
+plot(k, cverrs, xlab="Subset Size", ylab="CV Error", main='All subsets',
+     ylim=c(min(CVLo),max(CVHi)), type="n")
+points(k, cverrs, cex=2, col="red", pch=16)
+lines(k, cverrs, col="red", lwd=2)
+# plot error bars
+segments(k, CVLo, k, CVHi, col="blue", lwd=2)
+eps = 0.15
+segments(k-eps, CVLo, k+eps, CVLo, col="blue", lwd=2)
+segments(k-eps, CVHi, k+eps, CVHi, col="blue", lwd=2)
+
+indBest = oneSDRule(fwd.step.cv$Subsets[,c("CV", "sdCV")])
+abline(v=indBest-1, lty=2)
+indMin = which.min(cverrs)
+fmin = sdCV[indMin]
+cutOff = fmin + cverrs[indMin]
+abline(h=cutOff, lty=2)
+indMin = which.min(cverrs)
+abline(v=indMin-1, lty=2)
+
+points(0:10, dev.plot, lwd=2, col='black')
+legend("topright", legend=c("deviance", "CV"), col=c("black", "red"), pch=1)
+```
+
+
+
+
+
+## Backward selection
+
+
+
+```{r}
+bwd.step.bic = bestglm(df, 
+                       family = gaussian, 
+                       IC     = "BIC",
+                       method = "backward")
+bwd.step.bic
+```
+
+\footnotesize
+```{r}
+bwd.step.bic$Subsets
+```
+\normalsize
+
+```{r}
+dev.plot = -2 * bwd.step.bic$Subsets$logLikelihood
+bic.plot = bwd.step.bic$Subsets$BIC
+plot(0:10, dev.plot, lwd=2, col='black', type='p',
+     ylim = c(min(dev.plot), max(bic.plot)),
+     xlab='Subset Size', ylab='Deviance', main='All subsets')
+points(0:10, bic.plot, lwd=2, col='red')
+legend("topright", legend=c("deviance", "BIC"), col=c("black", "red"), pch=1)
+```
+
+
+
+
+
+
+
+```{r}
+bwd.step.cv = bestglm(df, 
+                      family = gaussian, 
+                      IC     = "CV",
+                      CVArgs = list(Method="HTF", K=10, REP=1),
+                      method = "backward")
+bwd.step.cv
+```
+
+\footnotesize
+```{r}
+bwd.step.cv$Subsets
+```
+\normalsize
+
+```{r}
+dev.plot = -2 * bwd.step.cv$Subsets$logLikelihood
+cverrs = bwd.step.cv$Subsets$CV
+sdCV = bwd.step.cv$Subsets$sdCV
+CVLo = cverrs - sdCV
+CVHi = cverrs + sdCV
+k = 0:(length(cverrs)-1)
+plot(k, cverrs, xlab="Subset Size", ylab="CV Error", main='All subsets',
+     ylim=c(min(CVLo),max(CVHi)), type="n")
+points(k, cverrs, cex=2, col="red", pch=16)
+lines(k, cverrs, col="red", lwd=2)
+# plot error bars
+segments(k, CVLo, k, CVHi, col="blue", lwd=2)
+eps = 0.15
+segments(k-eps, CVLo, k+eps, CVLo, col="blue", lwd=2)
+segments(k-eps, CVHi, k+eps, CVHi, col="blue", lwd=2)
+
+indBest = oneSDRule(bwd.step.cv$Subsets[,c("CV", "sdCV")])
+abline(v=indBest-1, lty=2)
+indMin = which.min(cverrs)
+fmin = sdCV[indMin]
+cutOff = fmin + cverrs[indMin]
+abline(h=cutOff, lty=2)
+indMin = which.min(cverrs)
+abline(v=indMin-1, lty=2)
+
+points(0:10, dev.plot, lwd=2, col='black')
+legend("topright", legend=c("deviance", "CV"), col=c("black", "red"), pch=1)
+```
+
+```{r}
+msummary(list('BIC best subset' = best.subset.model.bic$BestModel,
+              'CV best subset' = best.subset.model.cv$BestModel,
+              'BIC Step fwd' = fwd.step.bic$BestModel,
+              'CV Step fwd' = fwd.step.cv$BestModel,
+              'BIC Step bwd' = bwd.step.bic$BestModel,
+              'CV Step bwd' = bwd.step.cv$BestModel
+              ))
+```
+
+
+
+# Shrinkage Procedures
+
+The package `glmnet` implements Lasso and Ridge regression.
+
+
+```{r message=F}
+library(glmnet)
+```
+
+
+## Lasso fit
+
+Lasso regression with the `glmnet()` function 
+has as a first argument the design matrix and as a second argument the response vector.
+
+```{r}
+x = as.matrix( df[,1:10] )
+y = df[,11]
+lasso.fit = glmnet(x, y)
+plot( lasso.fit, xvar = "lambda" )
+plot( lasso.fit, xvar = "norm" )
+```
+
+
+Clearly the regression coefficients are smaller for the lasso regression than for least squares.
+
+```{r}
+data.frame(lasso = as.matrix(coef(lasso.fit, s = c(5, 1, 0.5))),
+           LS    = coef(lm(y ~ x)))
+```
+
+We observe that the lasso
+
+- Can shrink coefficients exactly to zero
+- Simultaneously estimates and selects coefficients
+
+
+We need to choose lambda.
+
+```{r}
+lasso.cv = cv.glmnet(x, y)
+plot(lasso.cv, sign.lambda=-1)
+```
+
+
+```{r}
+glmnet.fit <- lasso.cv$glmnet.fit
+plot(glmnet.fit, xvar = "lambda")
+abline(v = log(lasso.cv$lambda.min), lty=2, col="red")
+abline(v = log(lasso.cv$lambda.1se), lty=2, col="green")
+legend("topright", legend=c("min", "1se"), lty=2, col=c("red", "green"))
+```
+
+Let us investigate coefficients for these values of lambda:
+```{r}
+coef(lasso.cv, s = c(lasso.cv$lambda.min, lasso.cv$lambda.1se))
+```
+
+
+
+
+## Ridge regression fit
+
+Ridge regression with the `glmnet()` function by changing one of its default options to `alpha=0`.
+By default, `alpha=1`, which results in a lasso fit.
+
+```{r}
+ridge.fit = glmnet(x, y, alpha = 0)
+plot( ridge.fit, xvar = "lambda" )
+plot( ridge.fit, xvar = "norm" )
+```
+
+
+Clearly the regression coefficients are smaller for the lasso regression than for least squares.
+
+```{r}
+data.frame(ridge = as.matrix(coef(ridge.fit, s = c(20, 5, 0.5))),
+           LS    = coef(lm(y ~ x)))
+```
+
+We observe that the ridge regression
+
+- Estimates the values of the coefficients
+- Does not shrink coefficients exactly to zero
+
+
+
+We need to choose lambda.
+
+```{r}
+ridge.cv = cv.glmnet(x, y, alpha = 0)
+plot(ridge.cv, sign.lambda=-1)
+```
+
+
+```{r}
+glmnet.fit <- ridge.cv$glmnet.fit
+plot(glmnet.fit, xvar = "lambda")
+abline(v = log(ridge.cv$lambda.min), lty=2, col="red")
+abline(v = log(ridge.cv$lambda.1se), lty=2, col="green")
+legend("topright", legend=c("min", "1se"), lty=2, col=c("red", "green"))
+```
+
+
+
+
+Let us investigate coefficients for these values of lambda:
+```{r}
+coef(ridge.cv, s = c(ridge.cv$lambda.min, ridge.cv$lambda.1se))
+```

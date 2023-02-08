@@ -1,0 +1,183 @@
+---
+title: "We8There Text Example"
+author: "Mladen Kolar (mkolar@chicagobooth.edu)"
+output: 
+  html_document: default
+  pdf_document: 
+      includes:
+        in_header: mystyles.sty
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE)
+options(digits = 6)
+options(width = 100)
+options(warn = -1)
+```
+
+Let us a look at variable selection with logistic regression.
+
+```{r message=FALSE}
+library(textir)    # dataset is in this package
+library(glmnet)
+data(we8there)
+```
+
+We have 6166 reviews, from the now-defunct travel website `we8there.com`. 
+On average the length a review is 90 words.
+
+Reviews contain both text and a multidimensional rating on overall experience, 
+atmosphere, food, service, and value. Each aspect is rated on
+a five-point scale, with 1 indicating terrible and 5 indicating
+excellent.
+
+```{r}
+head(we8thereRatings)
+```
+
+
+Here are the words from some of the reviews
+```{r}
+we8thereCounts[1, we8thereCounts[1, ]!=0]
+```
+and corresponding ratings
+```{r}
+we8thereRatings[1, ]
+```
+
+```{r}
+we8thereCounts[50, we8thereCounts[50, ]!=0]
+```
+
+```{r}
+we8thereRatings[50, ]
+```
+
+
+```{r}
+we8thereCounts[5200, we8thereCounts[5200, ]!=0]
+```
+
+```{r}
+we8thereRatings[5200, ]
+```
+
+```{r}
+we8thereCounts[5900, we8thereCounts[5900, ]!=0]
+```
+
+```{r}
+we8thereRatings[5900, ]
+```
+
+
+```{r}
+we8thereCounts[6100, we8thereCounts[6100, ]!=0]
+```
+
+```{r}
+we8thereRatings[6100, ]
+```
+
+
+
+
+We are going predict if the `Overall` rating is larger than 3 or not. 
+Let us transform `Overall` rating into {0, 1}.
+
+```{r}
+y = ifelse(we8thereRatings$Overall>3, 1, 0)
+y = as.factor(y)
+```
+
+Let us fit a lasso logistic regression.
+Remember that the parameter `alpha` is used to 
+tell the function whether to use the lasso or ridge penalty.
+```{r}
+set.seed(1)
+lasso.fit = cv.glmnet(x = we8thereCounts, y = y, 
+                    family = "binomial",
+                    alpha = 1,       # lasso - 1, ridge - 0                 
+                    nfold = 5
+)
+lasso.fit
+```
+
+```{r}
+plot(lasso.fit)
+```
+
+```{r}
+plot(lasso.fit$glmnet.fit, xvar = "lambda")
+abline(v = log(lasso.fit$lambda.min), lty=2, col="red")
+abline(v = log(lasso.fit$lambda.1se), lty=2, col="red")
+```
+
+Here  `lasso.fit$glmnet.fit` object is obtained by fitting all of data.
+```{r}
+lasso.1se.coef = coef(lasso.fit$glmnet.fit, s=lasso.fit$lambda.1se)
+```
+
+What are positive words?
+```{r message=F}
+oo = order( lasso.1se.coef, decreasing = TRUE )
+dimnames(lasso.1se.coef)[[1]][oo[1:10]]
+lasso.1se.coef[oo[1:10]]
+```
+
+What are negative words?
+```{r}
+dimnames(lasso.1se.coef)[[1]][tail(oo,10)]
+lasso.1se.coef[tail(oo,10)]
+```
+
+
+
+
+
+
+
+
+
+
+Let us now fit a logistic regression with the ridge penalty.
+
+
+```{r}
+ridge.fit = cv.glmnet(x = we8thereCounts, y = y, 
+                          family = "binomial",
+                          alpha = 0,                        # lasso - 1, ridge - 0
+                          nfold = 5
+)
+ridge.fit
+```
+
+```{r}
+plot(ridge.fit)
+```
+
+```{r}
+plot(ridge.fit$glmnet.fit, xvar = "lambda")
+abline(v = log(ridge.fit$lambda.min), lty=2, col="red")
+abline(v = log(ridge.fit$lambda.1se), lty=2, col="red")
+```
+
+```{r}
+ridge.1se.coef = coef(ridge.fit$glmnet.fit, s=ridge.fit$lambda.1se)
+```
+
+
+
+
+What are positive words?
+```{r message=F}
+oo = order( ridge.1se.coef, decreasing = TRUE )
+dimnames(ridge.1se.coef)[[1]][oo[2:11]]
+ridge.1se.coef[oo[2:11]]
+```
+
+What are negative words?
+```{r}
+dimnames(ridge.1se.coef)[[1]][tail(oo,10)]
+ridge.1se.coef[tail(oo,10)]
+```
