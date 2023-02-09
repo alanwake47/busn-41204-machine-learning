@@ -1,0 +1,327 @@
+---
+title: "BUS41204: Week 5 Review Session"
+author: "JungHo Lee"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(fig.width = 6)
+knitr::opts_chunk$set(fig.align="center")
+```
+
+# Variable Selection
+
+Agenda: 
+
+1. Stepwise Selection Methods
+2. Shrinkage Methods and Cross-Validation
+3. Boruta Method
+
+Why Select Variables?
+
+* Performance: Predictive performance is often degraded as the number of uninformative predictors (noise) increases
+* Interpretability: Simpler models are easier to interpret 
+* Computational ease: Simpler models require less computational resources
+* Trade-off between interpretability/low variance for a small model vs. reducing bias/model error in the larger model.
+
+
+## Stepwise Selection Methods
+
+We will use simulated data to see how backward elimination and forward selection can be implemented in practice. We can also combine the two (add a covariate, check if any can be removed, add another, etc).
+
+Simulate our data:
+```{r}
+set.seed(41204)
+
+n = 30
+p = 15 # total number of predictors (without the intercept)
+s = 10 # true model size
+X = scale(matrix(rnorm(n*p),n,p), center=FALSE) # covariate matrix
+
+beta = numeric(p)
+beta[1:s] = runif(s,-5,5)
+y = X%*%beta + rnorm(n) # response
+```
+
+### Backward Elimination
+
+Backward elimination: Start with a model with all covariates, remove one at a time.
+
+If we use $p$-value as our stopping criterion, at each step, we
+
+* Remove the variable with the highest (least significant) $p$-value,
+* Stop if all p-values are $\leq$ threshold.
+```{r}
+#' @param y: a vector of responses
+#' @param X: covariate matrix
+#' @param alpha: threshold p-value
+#' @return XS: matrix of selected covariates
+run_backward_elimination = function(y, X, alpha){
+  p = dim(X)[2]; S = 1:p
+	
+	while(TRUE){
+  	pvals = summary(lm(y~X[,S]))$coefficients[-1,4]
+  	
+  	# stopping criterion
+  	if(max(pvals) <= alpha){
+  	  break
+  	}
+  	
+  	# remove var with highest p-val
+		remove_ind = S[which.max(pvals)]
+		S = setdiff(S,remove_ind)
+	}
+	XS = X[,S,drop=FALSE]; colnames(XS) = S
+	
+	return(XS)
+}
+```
+
+Run backward elimination with the threshold p-value of 0.1:
+```{r}
+XS = run_backward_elimination(y, X, 0.1)
+summary(lm(y~XS))$coefficients
+```
+
+Run backwards elimination with the threshold p-value of 0.01:
+```{r}
+XS = run_backward_elimination(y, X, 0.01)
+summary(lm(y~XS))$coefficients
+```
+Just by random chance, some of the covariates might come with a low $p$-value, more so when the number of predictors is large. 
+
+```{r}
+y_noise = rnorm(n)
+XS = run_backward_elimination(y_noise, X, 0.1)
+summary(lm(y_noise~XS))$coefficients
+```
+
+How do we address this issue?
+
+Bayesian Information Criterion (BIC) = $\text{deviance} + \text{log}(n)*\text{(length(variable)}+1)$ takes into account the size of the model. 
+
+Up to a constant, this is equal to BIC(S) = $n\log(RSS(\text{model S})/n) + |S|log(n)$.
+
+Apply the BIC to backward elimination:
+```{r}
+#' @param y: a vector of responses
+#' @param X: covariate matrix
+#' @return plots of RSS and BIC as a function of model size
+run_backward_elimination_BIC = function(y, X){
+	S = 1:p
+	S_in_order = rep(0,p)
+	store_RSS = rep(0,p+1)
+	
+	store_RSS[p+1] = sum((y-lm(y~X[,S])$fitted.values)^2)
+	
+	for(i in 1:p){
+		pvals = summary(lm(y~X[,S]))$coefficients[-1,4]
+	  remove_ind = S[which.max(pvals)]
+		S_in_order[p+1-i] = remove_ind
+		S = setdiff(S,remove_ind)
+		
+		if(length(S)>0){
+		  store_RSS[p+1-i] = sum((y-lm(y~X[,S])$fitted.values)^2)
+		}
+		else{store_RSS[p+1-i] = sum((y-lm(y~1)$fitted.values)^2)}}
+	
+	BIC = n*log(store_RSS) + (0:p)*log(n)
+	modelsize = which.min(BIC)-1
+	
+	par(mfrow=c(1,2))
+	plot(0:p, store_RSS, xlab='Model Size', ylab='RSS')
+	plot(0:p, BIC, xlab='Model Size', ylab='BIC')
+}
+```
+
+Run with signal:
+```{r fig.width=10,fig.height=6}
+run_backward_elimination_BIC(y, X)
+```
+
+```{r}
+run_backward_elimination_BIC(y_noise, X)
+```
+
+### Forward Selection
+
+Start with a model with no covariates, add in one at a time.
+
+At each step,
+
+* Select the variable that decreases the RSS the most
+* Stop if all $p$-values are $\geq$ threshold
+```{r}
+#' @param y: a vector of responses
+#' @param X: covariate matrix
+#' @return plots of RSS and BIC as a function of model size
+run_forward_selection_BIC = function(y, X){
+  S = store_RSS = c()
+  p = dim(X)[2]
+  
+  for(i in 1:p){
+  		RSS = rep(0,p)
+  		for(j in 1:p){
+  		  S0 = append(S,j)
+  		  RSS[j] = sum((y-lm(y~X[,S0])$fitted.values)^2)
+  		}
+  		store_RSS[i+1] = min(RSS)
+  		ind = which.min(RSS)
+  		S = append(S,ind)
+  }
+  
+  	BIC = n*log(store_RSS) + (0:p)*log(n)
+  	modelsize = which.min(BIC)-1
+  	
+		par(mfrow=c(1,2))
+		plot(0:p, store_RSS, xlab='Model Size', ylab='RSS')
+  	plot(0:p, BIC, xlab='Model Size', ylab='BIC')
+}
+```
+
+```{r}
+run_forward_selection_BIC(y, X)
+```
+
+### Best Subset
+
+Compares all models for each possible combination of the $p$ predictors. Since there are $2^p$ models to compare, it cannot be applied when $p$ is large.
+
+```{r, message=F}
+library(bestglm)
+
+data = cbind(X,y)
+bestglm(as.data.frame(data), family = gaussian, IC = "BIC", method = "exhaustive")
+```
+
+## Shrinkage Methods
+
+Main idea: By shrinking the coefficient, we compromise some bias for less variance. As a result, we get better prediction performance.
+
+### Lasso and Ridge Methods
+
+**Lasso**: $\hat{\beta} = \text{argmin}_{\beta} \Big\{ \text{deviance} +\lambda \|\beta\|_1\Big\}$
+**Ridge**: $\hat{\beta} = \text{argmin}_{\beta} \Big\{ \text{deviance} +\lambda \|\beta\|_2^2\Big\}$
+
+```{r}
+ames = as.matrix(read.table('ames_data.txt', header=TRUE))
+
+y_name = 'LotArea'
+
+ind = which(ames[,colnames(ames)=='YearBuilt']>=2000) # only those built after 2000
+
+X = ames[ind, colnames(ames)!=y_name]
+y = ames[ind, colnames(ames)==y_name]
+
+n = length(y); p = dim(X)[2]
+```
+
+```{r}
+colnames(X)
+```
+
+Ridge regression:
+```{r fig.height=6, warning=FALSE, message=FALSE}
+library(glmnet)
+
+plot(glmnet(X, y, alpha=0), xvar = "lambda") # alpha = 0 is ridge penalty
+```
+
+Lasso regression:
+```{r fig.height=6}
+plot(glmnet(X, y, alpha=1), xvar = "lambda") # alpha = 1 is lasso penalty
+```
+
+### Cross-Validation
+```{r fig.height=4}
+# default is 10-fold cv
+cv_ridge = cv.glmnet(X, y, alpha=0) # ridge
+cv_lasso = cv.glmnet(X, y, alpha=1) # lasso
+
+par(mfrow=c(1,2))
+plot(cv_ridge)
+plot(cv_lasso)
+```
+
+```{r}
+coef(cv_ridge)
+```
+
+```{r}
+coef(cv_lasso)
+```
+
+```{r}
+# predict(cv_lasso, newdata)
+```
+
+
+## Boruta Method
+
+Stochastic wrapper procedure that uses random forest to compute variable importance measures
+
+Overview of the Boruta algorithm:
+
+* Adds randomness to data by creating shuffled copies of all features (shadow features)
+* Train a random forest on the extended data set to compute feature importance
+* Iteratively remove features that are less important than the best shadow features
+* Stops when all features are confirmed or rejected or a specified limit of random forest runs is reached.
+
+We import $\tt{BankChurners.csv}$ data from Kaggle. We then delete the last 2 variables suggested from Kaggle data description, and $\tt{CLIENTNUM}$ since it's Client's ID number which is unique and does not affect our prediction.
+```{r}
+library(caret)
+
+churners = read.csv('BankChurners.csv')
+str(churners)
+churners= churners[,-c(1,22,23)]
+```
+
+```{r}
+churners$Attrition_Flag = as.factor(churners$Attrition_Flag)
+
+set.seed(41204)
+
+n = dim(churners)[1]
+ind = sample(n, floor(0.75*n))
+train = churners[ind,]
+test = churners[-ind,]
+
+table(train$Attrition_Flag)
+table(test$Attrition_Flag)
+```
+
+We use 30% of the training data to select the input variables by Boruta method.
+```{r out.width = "70%"}
+library(Boruta)
+
+inVars = sample(nrow(train),nrow(train)*.3)
+
+(boruta = Boruta(Attrition_Flag~., data=train[inVars,], maxRuns=500, doTrace=0))
+plot(boruta, xlab="", xaxt="n")
+
+lz = lapply(1:ncol(boruta$ImpHistory), function(i)
+  boruta$ImpHistory[is.finite(boruta$ImpHistory[,i]),i])
+
+names(lz) = colnames(boruta$ImpHistory)
+lb = sort(sapply(lz, median))
+axis(side=1, las=2, labels=names(lb), at=1:ncol(boruta$ImpHistory), cex.axis=0.5, font=4)
+```
+
+Variables with green boxes are more important than the ones represented with red boxes, and we can see the range of importance scores within a single variable in the graph.
+
+```{r}
+selected_vars = names(boruta$finalDecision)[boruta$finalDecision %in% c("Confirmed","Tentative")]
+print(selected_vars)
+length(selected_vars)
+```
+
+\pagebreak
+
+# References
+
+* https://www.stat.cmu.edu/~cshalizi/mreg/15/lectures/26/lecture-26.pdf
+* https://bookdown.org/max/FES/selection.html
+* Lectures Notes from STAT34300: Applied Linear Statistical Methods by Prof. Rina Foygel Barber
+
+
