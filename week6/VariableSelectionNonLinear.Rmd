@@ -1,0 +1,510 @@
+---
+title: "Variable Selection"
+author: "Mladen Kolar (mkolar@chicagobooth.edu)"
+date: ''
+fontsize: 10pt
+output:
+  pdf_document: 
+      includes:
+        in_header: mystyles.sty    
+  html_document: default    
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE)
+options(digits=3)
+options(width = 100)
+options(warn = -1)
+```
+
+  
+# Variable Selection
+
+For many models, predictive performance is degraded as the number of uninformative predictors increases. 
+
+Simpler model requires less computational resources. 
+
+Model is more interpretable with fewer predictors.
+
+\vspace{-1em}
+
+# Classes of variable selection techniques
+
+**Intrinsic methods**
+
+_Examples_: tree based models, regularization based methods, such as the lasso
+
+_Pros_: no external feature selection tool is required
+
+_Cons_: These approaches are specific to a model being used.
+
+\sk
+
+**Filter methods**
+
+Evaluate the relevance of predictors using some statistic (e.g., information gain, odds-ratio, $\chi^2$ statistics, correlation). Only keep predictors that pass some threshold criterion.
+
+Typically, each feature is viewed as independent of the others, effectively ignoring interactions between features.
+
+_Pros_: computationally efficient
+
+_Cons_: redundant predictors may be selected; hard to detect interaction and nonlinear effects;
+ a selection of predictors that meets a filtering may not be a set that  improves predictive performance.
+
+\sk
+
+**Wrapper methods**
+
+_Deterministic_ wrapper feature selection methods either start with no features
+or with all features included in the model
+and iteratively refine the set of chosen features
+according to some model quality measures. 
+
+- forward-selection; backward-selection (_recursive feature elimination_ or RFE)
+
+_Stochastic_ wrapper feature selection procedures 
+
+- genetic algorithms (GA); simulated annealing (SA).
+
+\sk
+
+Wrappers have the potential advantage of searching a wider variety
+of predictor subsets than filters. 
+
+- computationally demanding---need to fit a potentially time consuming model multiple times.
+
+\sk
+
+**Summary**: The different types of feature selection methods have their own pros and cons. 
+
+- It is important to remember that the globally best subset is often difficult to find.
+
+\newpage 
+
+# The Effect of Irrelevant Features
+
+The effect depends on:
+
+- the type of model;
+- the nature of the predictors;
+- the ratio of the size of the training set to the number of predictors.
+
+
+Let us take a look at a simulation in Chapter 10.3 of
+**Feature Engineering and Selection** by _Max Kuhn and Kjell Johnson_ ( https://bookdown.org/max/FES/feature-selection-simulation.html ).
+
+- The code for the simulation is here: https://github.com/topepo/FES_Selection_Simulation
+- The simulation setting is taken from Sapp, Laan, and Canny ([2014](https://biostats.bepress.com/ucbbiostat/paper313/)) .
+\begin{align}
+y =  & x_1 + \sin(x_2) + \log(|x_3|) + x_4^2 + x_5x_6 + I(x_7x_8x_9 < 0) + I(x_{10} > 0) + \notag \\
+     & x_{11}I(x_11 > 0) + \sqrt(|x_{12}|) +\cos(x_{13}) + 2x_{14} + |x_{15}| + I(x_{16} < -1) + \notag \\
+     & x_{17}I(x_{17} < -1) - 2 x_{18}- x_{19}x_{20} + \epsilon
+\end{align}
+
+- input variables $x_j \sim N(0, 1)$; the error $\epsilon \sim N(0, 3^2)$;
+- between 10 and 200 extra columns of input variables with no connection to the outcome were added;
+- the training size $n = 500$ or $n = 1,000$.
+ 
+The focus of simulation is to look at the relative impact of irrelevant predictors
+and not at absolute performance.
+
+\includegraphics[width=0.9\linewidth]{fig/selection-rmse-1.png}
+
+
+
+# Overfitting When Selecting Input Variables
+
+Often it is possible to find a subset of input variables 
+that has good predictive performance on the training set
+
+- but has _poor performance_ when used on a **test set**.
+
+\sk
+
+**Feature selection needs to be part of the cross-validation** (or more generally resampling) **process.**
+
+## Wrong approach
+
+The **most common mistake** is to only conduct cross-validation inside of the variable selection procedure.
+
+\sk\sk
+
+\begin{center}
+\includegraphics[width=\textwidth]{fig/wrong.pdf}
+\end{center}
+
+\sk\sk
+
+_Algorithm_:
+
+1. Rank the predictors using the training set;
+2. **For** _each subset size_, $S_i$
+
+   2.1 **For** _each split into training/validation set_ 
+    - Fit model with $S_i$ most important variables on the training set.
+    - Predict the validation set.
+    
+   2.2 Calculate the model performance with $S_i$ variables
+ 
+3. Determine the appropriate number of predictors (i.e., the $S_i$ with best performance)
+
+4. Fit the final model based on the optimal $S_i$
+
+\sk\sk
+
+Two key problems with the above procedure:
+
+- The feature selection is performed outside cross-validation. 
+  CV cannot effectively measure the impact of the selection process.
+
+- The same data are being used to measure performance of the model and 
+  to select the input variables This is the same issue that 
+  arises when fitting a model to the training set and then 
+  using the same training set to measure performance. There is an obvious bias 
+  in measuring the performance of the model if it can closely
+  fit the training data. We need out-of-sample data 
+  to accurately determine how well the model is doing.
+  If the variable selection process results in overfitting, 
+  there are no data remaining that could possibly inform us of the problem.
+
+
+\newpage
+## Correct approach
+
+**We must include variable selection as a component of the modeling process**.
+
+- In the same way that we are choosing other tuning parameters for the model.
+
+\sk\sk
+
+\begin{center}
+\includegraphics[width=\textwidth]{fig/right.pdf}
+\end{center}
+
+\sk\sk
+
+_Algorithm_:
+
+1. For each fold of cross-validation, $1 \ldots k$
+
+   1. Split data into training/validation set
+   
+   2. Rank the predictors using the training set
+   
+   3. **For** _each subset size_, $S_i$
+    
+      - Fit model with $S_i$ most important variables on the training set.
+      - Predict the validation set.
+    
+2. Calculate the model performance with $S_i$ variables
+
+3. Determine the appropriate number of variables
+
+4. Fit the final model based on the optimal number of variables using the original training set
+
+
+\sk\sk
+
+In the above procedure, the number of variables to select is treated as a tuning parameter. 
+
+- feature selection is done within cross-validation;
+- different set of input variables may be selected on each one of the cross-validation folds;
+- computational cost increases.
+
+\sk\sk
+
+Large data sets tend to greatly reduce the risk of overfitting to 
+the predictors during variable selection. 
+Using separate data splits for variable ranking/filtering, 
+modeling, and evaluation can be both efficient and effective.
+
+\newpage
+
+# Example: Amyotrophic Lateral Sclerosis 
+
+We are going to explore the following two variable selection procedures
+
+- `Boruta` package: stochastic wrapper procedure that uses random forest to compute variable importance measures
+- Recursive Feature Elimination: a classical deterministic wrapper method
+
+The data is from this paper:
+
+- [Model-Based and Model-Free Techniques for Amyotrophic Lateral Sclerosis Diagnostic Prediction and Patient Clustering](https://doi.org/10.1007/s12021-018-9406-9). by Tang, M., Gao, C, Goutman, SA, Kalinin, A, Mukherjee, B, Guan, Y, and Dinov, ID.
+
+
+Amyotrophic Lateral Sclerosis (ALS) is 
+a rare but devastating disease.
+The data are from a large clinical trial including big, 
+multi-source and heterogeneous datasets.
+The clinical data shows that
+the rate of ALS progression varies significantly among patients.
+Majority of the patients die within 3 to 5 years after ALS onset,
+however, a few are able survive for over 10 years. This heterogeneity 
+of disease course hinders demonstration of its 
+biological mechanism and development of effective treatment. 
+ 
+We need to develop reliable predictive models of ALS progression 
+to understand the pathophysiology of the disease.
+
+
+The dataset contains 2,223 observations and 131 numeric variables.
+We select `ALSFRS_slope` as our outcome variable, as it captures the 
+patients' clinical decline over a year.
+
+\small
+```{r}
+ALS.train<-read.csv("ALS_TrainingData_2223.csv")
+summary(ALS.train)
+```
+\normalsize
+
+\sk\sk\sk
+
+- diverse variables
+- multiple features are highly correlated
+- some of variables represent statistics like `max`, `min` and `median`
+  values of the same clinical measurements
+  
+  
+\newpage
+
+## `Boruta()`
+
+https://mbq.github.io/Boruta/
+
+- reference: https://cran.r-project.org/web/packages/Boruta/Boruta.pdf
+- vignette: https://cran.r-project.org/web/packages/Boruta/vignettes/inahurry.pdf
+- detailed methodology: https://www.jstatsoft.org/article/view/v036i11
+
+Overview of boruta algorithm:
+
+- adds randomness to data by creating shuffled copies of all features (shadow features);
+- train a random forest on the extended data set to compute feature importance;
+- iteratively remove features that are less important than the best shadow features;
+- stops when all features are confirmed or rejected or a specified limit of random forest runs is reached.
+
+_Note_: This will take a few minutes to complete.
+```{r}
+library(Boruta)
+set.seed(43612)
+als <- Boruta(ALSFRS_slope~.-ID, data=ALS.train, doTrace=0)
+als
+```
+
+The importance scores for all features at every iteration are stored in the data frame `als$ImpHistory`.
+```{r}
+als$ImpHistory[1:6, 1:10]
+```
+
+\newpage
+A graph depicting the essential features.
+```{r}
+plot(als, xlab="", xaxt="n")
+lz<-lapply(1:ncol(als$ImpHistory), function(i)
+als$ImpHistory[is.finite(als$ImpHistory[, i]), i])
+names(lz)<-colnames(als$ImpHistory)
+lb<-sort(sapply(lz, median))
+axis(side=1, las=2, labels=names(lb), at=1:ncol(als$ImpHistory), cex.axis=0.5, font = 4)
+```
+
+Variables with green boxes are more important than the ones represented with red boxes,
+and we can see the range of importance scores within a single variable in the graph.
+
+It may be desirable to get rid of tentative features. 
+
+- use only when a strict decision is highly desired.
+
+```{r}
+final.als<-TentativeRoughFix(als)
+final.als
+```
+
+\newpage
+```{r}
+final.als$finalDecision
+```
+
+Report the Boruta "Confirmed" & "Tentative" features, removing the "Rejected" ones
+```{r}
+print(final.als$finalDecision[final.als$finalDecision %in% c("Confirmed", "Tentative")])
+```
+
+\newpage
+
+## Recursive feature elimination (RFE)
+
+Recursive feature elimination (RFE) is basically a backward selection. 
+
+- build a model on the entire set of variables
+- compute an importance score for each variables
+- remove the least important variable(s) from the model
+- re-build a model and re-compute importance scores
+- ...
+
+The subset size is a tuning parameter for RFE
+
+- the subset size that optimizes the loss is used to select the variables based on the importance rankings;
+- the optimal subset is then used to train the final model.
+
+
+RFE is frequently used with random forest models
+
+- random forest tends not to exclude variables 
+- internal method for measuring variable importance
+
+
+Measuring variable importance in suffers from multicollinearity. When
+there are highly correlated variables in a training set that 
+are useful for predicting the outcome, then which variable is chosen for 
+partitioning the samples is essentially a random selection. 
+
+- dilutes the importance scores
+- it might be beneficial to filter out highly correlated features
+
+\sk\sk
+
+_Note_: This will take a few minutes to complete.
+```{r message = F}
+library(caret)
+library(randomForest)
+set.seed(43612)
+control <- rfeControl(functions = rfFuncs, method = "cv", number=10)
+rf.train <- rfe(ALS.train[, -c(1, 7)], ALS.train[, 7], 
+                sizes=c(10, 20, 30, 40), rfeControl=control)
+rf.train
+```
+
+- the `sizes=` option allows us to specify the number of variables we want to include in the model
+
+\newpage
+```{r}
+plot(rf.train, type=c("g", "o"), cex=1, col=1:5)
+```
+
+
+Common variables chosen by the two techniques:
+
+```{r}
+predRFE <- predictors(rf.train)
+predBoruta <- getSelectedAttributes(final.als, withTentative = F)
+intersect(predBoruta, predRFE)
+```
+
+
+
+\newpage
+# Example: Simulation Study
+
+Let us also investigate the two procedures on a simulation benchmark where
+we know the true variable. We are going use the
+"Friedman 1" benchmark 
+([Friedman, 1991](https://projecteuclid.org/euclid.aos/1176347963); [Breiman, 1996](https://link.springer.com/article/10.1023/A:1018054314350)).
+Inputs are 10 independent variables uniformly distributed on the interval 
+$[0,1]$, only 5 out of these 10 are actually related to the outputs.
+Outputs are created according to the formula
+\[
+y = 10 \sin(\pi x_1 x_2) + 20 (x_3 - 0.5)^2 + 10 x_4 + 5 x_5 + \epsilon
+\]
+where $\epsilon \sim {\cal N}(0, \sigma^2)$.
+
+We use the `mlbench` library to obtain the data.
+
+```{r}
+library(mlbench)
+n <- 100
+p <- 40
+sigma <- 1
+set.seed(4125)
+sim <- mlbench.friedman1(n, sd = sigma)
+colnames(sim$x) <- c(paste("real", 1:5, sep = ""),
+                     paste("bogus", 1:5, sep = ""))
+bogus <- matrix(rnorm(n * p), nrow = n)
+colnames(bogus) <- paste("bogus", 5+(1:ncol(bogus)), sep = "")
+x <- cbind(sim$x, bogus)
+y <- sim$y
+```
+
+We added 40 additional pure noise variables that are univariate standard normals.
+
+The predictors are centered and scaled:
+```{r}
+normalization <- preProcess(x)
+x <- predict(normalization, x)
+x <- as.data.frame(x)
+subsets <- c(1:5, 10, 15, 20, 25)
+```
+The simulation will fit models with subset sizes of 25, 20, 15, 10, 5, 4, 3, 2, 1.
+
+_Note_: This will take a few minutes to complete.
+```{r}
+control <- rfeControl(functions = rfFuncs, method = "repeatedcv", number=10, repeats = 5)
+rf.sim  <- rfe(x, y, sizes=subsets, rfeControl=control)
+rf.sim
+```
+
+```{r}
+plot(rf.sim, type = c("g", "o"))
+```
+
+_Note_: This will take a few minutes to complete.
+```{r}
+boruta.sim <- Boruta(x, y)
+boruta.sim
+```
+
+Result plot
+```{r}
+plot(boruta.sim, xlab="", xaxt="n")
+lz<-lapply(1:ncol(boruta.sim$ImpHistory), function(i)
+boruta.sim$ImpHistory[is.finite(boruta.sim$ImpHistory[, i]), i])
+names(lz)<-colnames(boruta.sim$ImpHistory)
+lb<-sort(sapply(lz, median))
+axis(side=1, las=2, labels=names(lb), at=1:ncol(boruta.sim$ImpHistory), cex.axis=0.5, font = 4)
+```
+
+Attribute statistics
+```{r}
+attStats(boruta.sim)
+```
+
+
+Let us now try with a slightly large sample size $n = 200$.
+Everything else is the same.
+
+_Note_: This will take a few minutes to complete.
+```{r}
+n <- 200
+p <- 40
+sigma <- 1
+set.seed(4125)
+sim <- mlbench.friedman1(n, sd = sigma)
+colnames(sim$x) <- c(paste("real", 1:5, sep = ""),
+                     paste("bogus", 1:5, sep = ""))
+bogus <- matrix(rnorm(n * p), nrow = n)
+colnames(bogus) <- paste("bogus", 5+(1:ncol(bogus)), sep = "")
+x <- cbind(sim$x, bogus)
+y <- sim$y
+normalization <- preProcess(x)
+x <- predict(normalization, x)
+x <- as.data.frame(x)
+subsets <- c(1:5, 10, 15, 20, 25)
+
+control <- rfeControl(functions = rfFuncs, method = "repeatedcv", number=10, repeats = 5)
+rf.sim  <- rfe(x, y, sizes=subsets, rfeControl=control)
+rf.sim
+
+plot(rf.sim, type = c("g", "o"))
+
+boruta.sim <- Boruta(x, y)
+boruta.sim
+
+plot(boruta.sim, xlab="", xaxt="n")
+lz<-lapply(1:ncol(boruta.sim$ImpHistory), function(i)
+boruta.sim$ImpHistory[is.finite(boruta.sim$ImpHistory[, i]), i])
+names(lz)<-colnames(boruta.sim$ImpHistory)
+lb<-sort(sapply(lz, median))
+axis(side=1, las=2, labels=names(lb), at=1:ncol(boruta.sim$ImpHistory), cex.axis=0.5, font = 4)
+
+attStats(boruta.sim)
+```
