@@ -1,0 +1,469 @@
+---
+title: "Homework 4"
+subtitle: ""
+author: ""
+date: ""
+output: 
+    pdf_document:
+      includes:
+        in_header: mystyles.sty         
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = TRUE)
+options(digits = 3)
+options(width = 110)
+```
+
+
+# Question 1
+
+For each statement write if it is true or false and provide a one sentence explanation. 
+You will get points only if your explanation is correct.
+
+1. Subset selection hierarchy:
+
+   a. The predictors in the $k$-variable model identified by \emph{forward stepwise} are a subset of the  predictors in the $(k+1)$-variable model identified by \emph{forward stepwise} selection.
+   
+      \rd True - this is how forward stepwise works. It adds one at a time, so the $(k + 1)$-variable model will be the exact same as the $k$-variable model, with one extra predictor. \bk
+   
+   b. The predictors in the $k$-variable model identified by \emph{backward stepwise} are a subset of the predictors in the $(k+1)$-variable model identified by \emph{backward stepwise} selection. 
+   
+      \rd True - backward stepwise removes one predictor at a time. So to get from $(k + 1)$-down to $k$, we remove one of the variables, thus we have a subset. \bk
+   
+   c. The predictors in the $k$-variable model identified by \emph{best subset} are a subset of the predictors in the $(k+1)$-variable model identified by \emph{best subset} selection. 
+   
+      \rd False - for an example, look at the diabetes dataset. \bk
+
+   d. The predictors in the $k$-variable model identified by \emph{best subset} are a subset of the predictors in the $(k+1)$-variable model identified by \emph{forward stepwise} selection. 
+   
+      \rd False - although this might happen in some examples, it is not
+   guaranteed to happen. For example, forward stepwise can be greedy enough that 
+   its first variable means it completely avoids the true best two variable 
+   solution in creating its own three variable solution. \bk
+
+   e. The $1$-variable model identified by \emph{best subset} is the same as identified by \emph{forward stepwise} selection. 
+   
+      \rd True - forward stepwise does the exact same search as best does for $k = 1$. \bk
+
+   f. The $1$-variable model identified by \emph{backward stepwise} is the same as identified by \emph{forward stepwise} selection. 
+
+      \rd False - Backward stepwise greedily throws away variables because their 
+   addition is not useful at some given point (because you judge it relative to other
+   variables) - that does not mean they will not be useful later. \bk
+
+2. The following plot shows the cross validation scores for a ridge regression model with different values of
+the tuning parameter $\lambda$. Note that here what is plotted as the $x$-axis is the ratio of the $\ell_2$ norms of the ridge regression estimate $\hat\beta_\lambda^R$ and the least squares estimate $\hat\beta$. 
+The two dashed lines correspond to two values of $\lambda$, and hence two models.
+\begin{center}
+\input{ridge.tex}
+\end{center}
+
+   a. Model I uses a larger $\lambda$ than Model II.
+    
+      \rd True - first, when $\lambda = 0$ we get the full model, which
+   is shown on the right of the plot. When $\lambda$ is huge, we get no predictors,
+   which is shown on the left of the plot. Or more directly, 
+   we can see that Model I has a lower value of $\sum_j \beta_j^2$ than than model II.
+   This means that model I was created with a larger penalty on the size of the coefficients.
+   \bk
+    
+   b. Model I has a higher bias than Model II. 
+   
+      \rd True - Since a larger value of $\lambda$ is used to train Model I 
+    compared to Model II, coefficients in Model I are more restricted, resulting in 
+   a higher bias. \bk
+   
+   
+   c. Model I has a larger in-sample RSS than Model II. 
+   
+      \rd True - The tuning parameter $\lambda$ balances the in-sample loss with
+   the size of the coefficients. When $\lambda$ grows, we accept a worse (higher)
+   RSS for a better (lower) penalty value. Your coefficients would not grow for no 
+   reason---they grow to lower the RSS. \bk
+   
+   d. Model I may have a larger test error than Model II. 
+
+      \rd True - For a given test set, there is some best value of $\lambda$, 
+   or equivalently some best model, but we do not know it. \bk
+
+
+
+
+\newpage
+
+# Question 2
+
+
+You can download files for this assignment from   
+https://www.kaggle.com/c/busn41204-w2021-hw5-housingprice
+
+  Filename                 Description
+  --------                 -----------
+  `housing_train.csv`      contains data that you will use to build your model
+  `housing_test.csv`       contains data for which you will make predictions using your model
+  `sampleSubmission.csv`   example submission in the correct format
+  `DataDocumentation.txt`  a brief description of the variables
+
+The data set contains prices of residential homes in Ames, Iowa.
+The data were cleaned and the categorical variables were converted 
+to indicators.
+
+Load the data using:
+
+```{r}
+housing.train = read.csv('housing_train.csv')
+housing.test = read.csv('housing_test.csv')
+```
+
+
+Load libraries
+```{r, message=F}
+library(ggplot2)
+library(dplyr)
+library(bestglm)
+library(glmnet)
+library(Boruta)
+library(xgboost)
+```
+
+1. Create
+   -  a histogram of `SalePrice`;
+   -  a histogram of `log(Sale_Price)`;
+   -  a scatterplot between `SalePrice` and `Gr_Liv_Area`, the overall quality scores of the homes;
+   -  a scatterplot between `log(Sale_Price)` and `Gr_Liv_Area`.
+
+   Comment on what you observe. Which one do you think would be more appropriate as the response of a linear regression model, `SalePrice` or `log(Sale_Price)` ?
+
+\sk\sk
+
+
+Plot
+
+```{r}
+
+p1 <- housing.train %>%
+   ggplot( aes(x=Sale_Price) ) +
+    geom_histogram(bins=50)
+
+p2 <- housing.train %>%
+  ggplot( aes(x=log(Sale_Price)) ) +
+    geom_histogram(bins=50)
+
+p3 <- housing.train %>%
+   ggplot( aes(y=Sale_Price, x=Gr_Liv_Area) ) +
+     geom_point()
+
+p4 <- housing.train %>%
+   ggplot( aes(y=log(Sale_Price), x=Gr_Liv_Area) ) +
+     geom_point()
+
+gridExtra::grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+\rd
+Based on these plots, `log(Sale_Price)` is a less skewed distribution (looks close to normal), 
+while `Sale_Price` has a long right tail/right skew. We get heteroskedasticity with the raw 
+version and some evidence of non-linearity, while the log version looks good against `Gr_Liv_Area`.
+I would choose the log version as the more appropriate response in a linear model.
+\bk
+
+2. Fit a linear regression on `log(Sale_Price)` using forward stepwise selection.
+
+   - Create a plot displaying the cross validation score as a function of the number of predictors.
+   - Create a plot displaying BIC scores as a function of the number of predictors.
+   - How many variables get selected in the chosen model :
+     -  by cross validation;
+     -  by 1-sd rule;
+     -  by BIC.
+
+\sk\sk
+
+
+We create a data frame with `y` as `log(Sale_Price)`
+```{r}
+X = housing.train[, 1:(ncol(housing.train)-1)]
+y = log(housing.train$Sale_Price)
+Xy = cbind(X, y)
+```
+
+Run forward regression
+```{r, message=F, error=F, warning=F}
+fwd.cv = bestglm(Xy, 
+         family = gaussian, 
+         IC     = "CV",
+         CVArgs = list(Method="HTF", K=5, REP=5),
+         method = "forward")
+```
+
+```{r}
+fwd.bic = bestglm(Xy, 
+                  family = gaussian, 
+                  IC     = "BIC",
+                  method = "forward")
+```
+
+Create the plot. This is almost identical as in the diabetes example.
+```{r}
+cverrs = fwd.cv$Subsets$CV
+sdCV = fwd.cv$Subsets$sdCV
+CVLo = cverrs - sdCV
+CVHi = cverrs + sdCV
+k = 0:(length(cverrs)-1)
+plot(k, cverrs, xlab="Subset Size", ylab="CV Error", main='Forward regression',
+     ylim=c(min(CVLo), 0.03),     # we can better see the relevant part of the CV curve
+     type="n")                                   
+points(k, cverrs, cex=2, col="red", pch=16)
+lines(k, cverrs, col="red", lwd=2)
+# plot error bars
+segments(k, CVLo, k, CVHi, col="blue", lwd=2)
+eps = 0.15
+segments(k-eps, CVLo, k+eps, CVLo, col="blue", lwd=2)
+segments(k-eps, CVHi, k+eps, CVHi, col="blue", lwd=2)
+
+indBest = oneSDRule(fwd.cv$Subsets[,c("CV", "sdCV")])
+abline(v=indBest-1, lty=2, col='red')
+indMin = which.min(cverrs)
+fmin = sdCV[indMin]
+cutOff = fmin + cverrs[indMin]
+abline(h=cutOff, lty=2)
+abline(v=indMin-1, lty=2, col='blue')
+
+indBic = which.min(fwd.bic$Subsets$BIC)
+abline(v=indBic-1, lty=2, col='green')
+legend("topright", 
+       legend=c("CV", "one SD rule", "CV min", "BIC"), 
+       col=c("red", "red", "blue", "green"), 
+       pch=c(1,NA,NA,NA), lty=c(NA,2,2,2))
+```
+
+```{r}
+bic.plot = fwd.bic$Subsets$BIC
+plot(k, bic.plot, xlab="Subset Size", ylab="BIC", main='Forward regression',
+     ylim=c(min(bic.plot), -7400),    # we can better see the relevant part of the BIC curve
+     type="n") 
+points(k, bic.plot, cex=2, col="blue", pch=16)
+abline(v=indBic-1, lty=2, col='green')
+```
+
+The number of variables for different selection schemes is as follows:
+```{r}
+data.frame(oneSDRule=indBest-1, CV=indMin-1, BIC=indBic-1)
+```
+
+
+
+\newpage 
+
+3. Fit a linear regression on `log(Sale_Price)` using the lasso.
+
+   - Create a plot displaying the cross validation score as a function of $\lambda$.
+   - Create a plot displaying the coefficient values as a function of $\lambda$.
+   - How many variables get selected in the chosen model:
+     -  by cross validation;
+     -  by 1-sd rule.
+    
+\sk\sk
+
+```{r}
+lasso.cv = cv.glmnet(as.matrix(X), y, family="gaussian")
+plot(lasso.cv, sign.lambda=-1)
+```    
+    
+
+\newpage
+```{r}
+plot(lasso.cv$glmnet.fit, xvar='lambda')
+```
+    
+The number of variables for two different $\lambda$ values isvariable selection schemes is as follows:
+```{r}
+coef.1se = coef(lasso.cv, s=lasso.cv$lambda.1se)
+coef.min = coef(lasso.cv, s=lasso.cv$lambda.min)
+
+# count number of non-zeros
+nnz.1se = length( rownames(coef.1se)[coef.1se[,1] != 0] ) - 1
+nnz.min = length( rownames(coef.min)[coef.min[,1] != 0] ) - 1
+
+data.frame(oneSDRule=nnz.1se, CV=nnz.min)
+```
+
+\newpage
+4. Comment on the 5 models found in parts 2 and 3. Which one seems most promising for
+   out-of-sample prediction?
+
+
+Let us take a look at different error estimates.    
+```{r}   
+indMin.lasso = which(lasso.cv$lambda == lasso.cv$lambda.min)
+indBest.lasso = which(lasso.cv$lambda == lasso.cv$lambda.1se)
+
+tb = data.frame(CV_err = c(fwd.cv$Subsets[indMin,'CV'], 
+                           fwd.cv$Subsets[indBic,'CV'], 
+                           fwd.cv$Subsets[indBest,'CV'], 
+                           lasso.cv$cvm[indBest.lasso], 
+                           lasso.cv$cvm[indMin.lasso]),
+           CV_std = c(fwd.cv$Subsets[indMin,'sdCV'], 
+                      fwd.cv$Subsets[indBic,'sdCV'], 
+                      fwd.cv$Subsets[indBest,'sdCV'],
+                      lasso.cv$cvsd[indBest.lasso], 
+                      lasso.cv$cvsd[indMin.lasso]),
+           NumNonZero = c(indMin-1,
+                          indBic-1,
+                          indBest-1,
+                          lasso.cv$glmnet.fit$df[indMin.lasso],
+                          lasso.cv$glmnet.fit$df[indBest.lasso])
+           )
+rownames(tb) = c('min CV', 'BIC', 'one SD rule', 'min CV Lasso', 'one SD rule Lasso')
+
+tb
+```
+   
+We have seen that the CV curve is rather flat. I would go with the simplest model, that is, the one that 
+has the smallest number of variables. Here, this would be one obtained by forward subset regression and one 
+standard deviation rule.
+   
+\newpage
+5. Build a model to predict the final sale prices in `housing_test.csv`. 
+
+   This does not need to be a linear model. Explore some variable selection procedures
+   for nonparametric methods.
+
+\sk\sk
+
+First, let us split data into two parts.
+The first to rank variables on.
+The second one to train models with different values of tuning parameters.
+```{r}
+set.seed(1)
+inVariableRanking = sample(nrow(Xy), 700)
+```
+   
+Use `Boruta` on roughly 30% of observations.
+Note that any other procedure for ranking of variables could be used as well.
+I'm setting `maxRuns=1000` as I really want to resolve `Tentative` variables.
+```{r}
+ranking.boruta <- Boruta(y~., data=Xy[inVariableRanking,], maxRuns=1000, doTrace=0)
+ranking.boruta
+```   
+   
+   
+```{r}
+plot(ranking.boruta, xlab="", xaxt="n")
+lz<-lapply(1:ncol(ranking.boruta$ImpHistory), function(i)
+               ranking.boruta$ImpHistory[is.finite(ranking.boruta$ImpHistory[, i]), i])
+names(lz)<-colnames(ranking.boruta$ImpHistory)
+lb<-sort(sapply(lz, median))
+axis(side=1, las=2, labels=names(lb), 
+     at=1:ncol(ranking.boruta$ImpHistory), cex.axis=0.5, font = 4)
+```   
+
+These are all confirmed and tentative variables identified by Boruta.   
+```{r}
+potential_variables = names(ranking.boruta$finalDecision)[
+   ranking.boruta$finalDecision %in% c("Confirmed", "Tentative")
+   ]
+potential_variables
+```
+
+We rank them according to `median(ImpHistory)`.
+```{r}   
+ranked_variables = sort( sapply(lz, median), decreasing = T )
+ranked_variables = ranked_variables[names(ranked_variables) %in% potential_variables]
+ranked_variables
+```
+
+Now let us run xgboost with the number of variables as a tuning parameter.
+
+```{r}
+# create hyperparameter grid
+hyper_grid <- expand.grid(
+  number_of_var = c(30, 40, 45, length(ranked_variables)),
+  shrinkage = c(.01, 0.05, .1, .2),     ## controls the learning rate
+  interaction.depth = c(3, 5, 7),       ## tree depth
+  bag.fraction = c(.5, .65, .8),        ## percent of training data to sample for each tree
+  optimal_trees = 0,               # a place to dump results
+  min_RMSE = 0                     # a place to dump results
+)
+```
+
+
+
+
+  This will take a lot of time. 
+```{r}
+for(i in 1:nrow(hyper_grid)) {
+  # create parameter list
+  params <- list(
+    eta = hyper_grid$shrinkage[i],
+    max_depth = hyper_grid$interaction.depth[i],
+    subsample = hyper_grid$bag.fraction[i]
+  )
+  
+  vars_to_include = names(ranked_variables)[1:hyper_grid$number_of_var[i]]
+  X.train = as.matrix( Xy[-inVariableRanking, vars_to_include] )
+  Y.train = Xy[-inVariableRanking, 'y']
+  
+  # train model
+  xgb.tune <- xgb.cv(
+    params = params,
+    data = X.train,
+    label = Y.train,
+    nrounds = 5000,
+    nfold = 5,
+    objective = "reg:squarederror",     # for regression models
+    verbose = 0,                        # 0 - silent,
+    verbosity = 0, 
+    early_stopping_rounds = 10          # stop if no improvement for 10 consecutive trees
+  )
+  
+  # add min training error and trees to grid
+  hyper_grid$optimal_trees[i] <- which.min(xgb.tune$evaluation_log$test_rmse_mean)
+  hyper_grid$min_RMSE[i] <- min(xgb.tune$evaluation_log$test_rmse_mean)
+}
+```
+
+
+```{r}
+(oo = hyper_grid %>%
+    dplyr::arrange(min_RMSE) %>%
+    head(10))
+```
+
+Let us now refit on all data.
+```{r}
+vars_to_include = names(ranked_variables)[1:oo[1,]$number_of_var]
+vars_to_include
+
+X.all = as.matrix( Xy[, vars_to_include] )
+Y.all = Xy[, 'y']
+
+# parameter list
+params <- list(
+  eta = oo[1,]$shrinkage,
+  max_depth = oo[1,]$interaction.depth,
+  subsample = oo[1,]$bag.fraction
+)
+
+# train final model
+xgb.fit.final <- xgboost(
+  params = params,
+  data = X.all,
+  label = Y.all,
+  nrounds = oo[1,]$optimal_trees,
+  objective = "reg:squarederror",
+  verbose = 0
+)
+```
+
+
+We make predictions on the test set.
+```{r}
+yhat.xgb <- predict(xgb.fit.final, newdata=as.matrix(housing.test[,vars_to_include]))
+write.csv(data.frame(Id=1:length(yhat.xgb), Sale_Price=exp(yhat.xgb)), 
+          file = "mkolar_submission.csv",  
+          row.names = FALSE,
+          quote = FALSE)
+```
+
