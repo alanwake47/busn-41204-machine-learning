@@ -1,0 +1,272 @@
+---
+title: "XOR with h2o"
+subtitle: ""
+author: "Mladen Kolar (mkolar@chicagobooth.edu)"
+output: 
+  html_document: default   
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(digits=6)
+options(width = 80)
+```
+
+#  Input variable transformation
+
+The purpose of this example is to provide a simple illustration on 
+what the neural network learns.
+
+We will be using the neural network implementation in the `h2o`
+package.
+```{r, message=F}
+library(h2o)
+```
+
+The following command will start a server.
+`h20` is written in Java programming language and
+we are only using the R interface. 
+
+The parameter `nthreads=1` controls how many threads you are going to
+use for the server. If you set `nthreads=-1` then all the compute 
+power would be allocated to the server.
+
+```{r}
+h2oServer <- h2o.init(nthreads=1)
+h2o.no_progress()      # prevents progress bar from showing
+```
+
+We will generate a synthetic dataset with the XOR pattern.
+
+```{r}
+set.seed(1)
+
+p11 = cbind(rnorm(n=25,mean=1,sd=0.5),rnorm(n=25,mean=1,sd=0.5))
+p12 = cbind(rnorm(n=25,mean=-1,sd=0.5),rnorm(n=25,mean=1,sd=0.5))
+p13 = cbind(rnorm(n=25,mean=-1,sd=0.5),rnorm(n=25,mean=-1,sd=0.5))
+p14 = cbind(rnorm(n=25,mean=1,sd=0.5),rnorm(n=25,mean=-1,sd=0.5))
+
+g = as.factor(c(rep(0,50),rep(1,50)))
+x = rbind(p11,p13,p12,p14)
+
+# plot points
+par(mar=rep(2,4))
+plot(x, 
+     col=ifelse(g==1, "coral", "cornflowerblue"), 
+     pch=ifelse(g==1, 16,17),
+     axes=FALSE)
+box()
+```
+
+We need to load data into `h2o` as follows.
+We use `as.h2o(...)`.
+```{r}
+dfh2o = as.h2o(data.frame(x=x,y=g), destination_frame = "xor.train")
+```
+Next, we prepare the grid of points for testing
+```{r}
+px1 = seq(min(x[,1]), max(x[,1]), length.out = 100)
+px2 = seq(min(x[,2]), max(x[,2]), length.out = 100)
+gd = expand.grid(x.1=px1, x.2=px2)
+```
+and load it into `h2o`
+```{r}
+dftest = as.h2o(gd, destination_frame = "xor.test")
+```
+
+
+We are ready to train our first neural network with 1 hidden
+layer containing 2 neurons.
+```{r}
+#  1 hidden 2 neurons
+model = h2o.deeplearning(x=1:2, y=3, 
+                         training_frame = dfh2o,
+                         hidden = 2,
+                         activation = "Tanh",
+                         epochs = 1000,
+                         export_weights_and_biases = TRUE,
+                         model_id = "xor.model.h1n2",
+                         seed = 2
+)
+```
+Using the model, we make a prediction on the grid.
+```{r}
+phat = h2o.predict(model, dftest)
+```
+The third column of the `phat` object correspond to the probability
+of class 1.
+```{r}
+phat = matrix( phat[,3], length(px1), length(px2) )
+```
+
+We visualize the decision boundary.
+```{r}
+par(mar=rep(2,4))
+contour(px1, px2, phat, levels=0.5, labels="", xlab="", ylab="", 
+        main= "1 hidden layer with 2 neurons", 
+        axes=FALSE)
+points(gd, pch=".", cex=1.2, 
+       col=ifelse(phat>0.5, "coral", "cornflowerblue"))
+points(x, 
+       col=ifelse(g==1, "coral", "cornflowerblue"),
+       pch=ifelse(g==1, 16,17))
+box()
+```
+
+What did the neurons learn?
+We can extract weights and biases for the hidden neurons.
+```{r}
+h2o.biases(model, vector_id = 1)
+```
+```{r}
+h2o.weights(model, matrix_id = 1)
+```
+
+Let us compute the output of the first layer when
+we use the following points as input.
+
+  x1    x2   y  
+  --    --   --
+  -1    -1   +
+  -1     1   -
+   1    -1   -
+   1     1   +
+  
+```{r}  
+tmp.df = as.h2o(
+  data.frame(x.1=c(-1, -1, 1, 1), x.2=c(-1, 1, -1, 1)), 
+  destination_frame = "xor.4points")
+trans.features = h2o.deepfeatures(model, tmp.df, layer = 1)
+as.matrix( h2o.cbind(tmp.df, trans.features) )
+```
+
+```{r}
+par(mfrow=c(1,2))
+plot(c(-1, -1, 1, 1), 
+     c(-1, 1, -1, 1), 
+     xlim=c(-1.1,1.1), ylim=c(-1.1,1.1),
+     col = c("cornflowerblue","coral","coral","cornflowerblue"),
+     pch = c(17,16,16,17),
+     type="p", 
+     xlab="x1", ylab="x2")
+plot(as.matrix(trans.features)[,1], 
+     as.matrix(trans.features)[,2], 
+     xlim=c(-1.1,1.1), ylim=c(-1.1,1.1),
+     col = c("cornflowerblue","coral","coral","cornflowerblue"),
+     pch = c(17,16,16,17),
+     type="p", 
+     xlab="DF.L1.C1", ylab="DF.L1.C2")
+```
+
+Let us now transform all of the original data.
+```{r}
+trans.features = h2o.deepfeatures(model, dfh2o[,1:2], layer = 1)
+par(mar=rep(2,4))
+plot(jitter(as.matrix(trans.features)), 
+     col=ifelse(g==1, "coral", "cornflowerblue"), 
+     pch=ifelse(g==1, 16,17),
+     axes=FALSE)
+box()
+```
+
+We observe that the neural network has learned how to 
+transform the observations, so that they are linearly 
+separable in the new space.
+
+# Complexity of the fit
+
+Let us now train neural networks with more hidden neurons.
+
+**1 hidden 5 neurons**
+```{r}
+model5 = h2o.deeplearning(x=1:2, y=3, 
+                          dfh2o,
+                          hidden = c(5),
+                          activation = "Tanh",
+                          epochs = 5000,
+                          export_weights_and_biases = TRUE,
+                          model_id = "xor.model.h1n5",
+                          seed = 1
+)
+```
+
+```{r}
+phat = h2o.predict(model5, dftest)
+phat = matrix( phat[,3], length(px1), length(px2) )
+
+par(mar=rep(2,4))
+contour(px1, px2, phat, levels=0.5, labels="", xlab="", ylab="", 
+        main= "1 hidden layer with 5 neurons", 
+        axes=FALSE)
+points(gd, pch=".", cex=1.2, 
+       col=ifelse(phat>0.5, "coral", "cornflowerblue"))
+points(x, 
+       col=ifelse(g==1, "coral", "cornflowerblue"),
+       pch=ifelse(g==1, 16,17))
+box()
+```
+
+**1 hidden 10 neurons**
+```{r}
+model10 = h2o.deeplearning(x=1:2, y=3, 
+                           dfh2o,
+                           hidden = c(10),
+                           activation = "Tanh",
+                           epochs = 5000,
+                           export_weights_and_biases = TRUE,
+                           model_id = "xor.model.h1n10"
+)
+```
+
+```{r}
+phat = h2o.predict(model10, dftest)
+phat = matrix( phat[,3], length(px1), length(px2) )
+
+par(mar=rep(2,4))
+contour(px1, px2, phat, levels=0.5, labels="", xlab="", ylab="", 
+        main= "1 hidden layer with 10 neurons", 
+        axes=FALSE)
+points(gd, pch=".", cex=1.2, 
+       col=ifelse(phat>0.5, "coral", "cornflowerblue"))
+points(x, 
+       col=ifelse(g==1, "coral", "cornflowerblue"),
+       pch=ifelse(g==1, 16,17))
+box()
+```
+
+We observe that the number of neurons in the hiden layer 
+controls the complexity of the fitted function.
+
+- it is very easy to over-fit.
+
+We can use regularization to prevent over-fitting.
+
+**1 hidden 10 neurons regularized**
+```{r}
+model10.reg = h2o.deeplearning(x=1:2, y=3, 
+                               dfh2o,
+                               hidden = c(10),
+                               activation = "Tanh",
+                               epochs = 5000,
+                               export_weights_and_biases = TRUE,
+                               l1 = 2e-2,
+                               model_id = "xor.model.h1n10.reg",
+                               seed = 1
+)
+```
+
+```{r}
+phat = h2o.predict(model10.reg, dftest)
+phat = matrix( phat[,3], length(px1), length(px2) )
+
+par(mar=rep(2,4))
+contour(px1, px2, phat, levels=0.5, labels="", xlab="", ylab="", 
+        main= "1 hidden layer with 10 neurons regularized", 
+        axes=FALSE)
+points(gd, pch=".", cex=1.2, 
+       col=ifelse(phat>0.5, "coral", "cornflowerblue"))
+points(x, 
+       col=ifelse(g==1, "coral", "cornflowerblue"),
+       pch=ifelse(g==1, 16,17))
+box()
+```

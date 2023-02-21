@@ -1,0 +1,351 @@
+---
+title: "Used Cars with Neural Networks"
+author: "Mladen Kolar (mkolar@chicagobooth.edu)"
+output: 
+  html_document: default
+pdf_document: default
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = TRUE)
+options(digits=3)
+```
+  
+Load the H2O R package.
+
+- R installation instructions are at http://h2o.ai/download  
+
+```{r, message=FALSE}
+library(h2o)
+```
+  
+Start up a 1-node H2O server on your local machine, 
+and allow it to use all CPU cores and up to 8GB of memory.
+```{r}
+h2o.init(nthreads=-1, max_mem_size="8G")
+h2o.no_progress()
+```
+  
+The `h2o.deeplearning` function fits H2O's 
+Deep Learning models from within R.
+```{r}
+help(h2o.deeplearning)
+```
+
+While H2O Deep Learning has many parameters, it is quite easy to use.
+Most often we can use the default parameters for many of the inputs.
+We should change the following parameters:
+
+- the number and sizes of hidden layers;
+- the number of epochs and the activation function;
+- add some regularization technique.
+  
+  
+We will apply it to `UsedCars` data, which
+we used earlier with boosting.
+
+```{r}
+# download the file if it does not exist
+if (!file.exists("UsedCars.csv"))
+  download.file('https://github.com/ChicagoBoothML/MLClassData/raw/master/UsedCars/UsedCars.csv',
+                'UsedCars.csv')
+
+df <- h2o.importFile('UsedCars.csv') 
+dim( df )
+df
+```
+
+The data contains 20,063 rows and 11 
+columns (5 numerical and 6 categorical). 
+The target is the `price` column. 
+
+
+We split the data 3 ways: 
+
+- 60% for training,
+- 20% for validation (hyper parameter tuning), and 
+- 20% for final testing.
+
+
+```{r}
+splits <- h2o.splitFrame(df, c(0.6,0.2), seed=1)
+train  <- h2o.assign(splits[[1]], "train.hex") # 60%
+valid  <- h2o.assign(splits[[2]], "valid.hex") # 20%
+test   <- h2o.assign(splits[[3]], "test.hex")  # 20%
+```
+
+
+We build our first Deep Learning model
+where we predict the `price` column
+using the remaining 4 numerical and 6 categorical 
+variables. `h2o` will automatically use automatic 
+one-hot encoding.
+
+```{r}
+response <- "price"
+predictors <- setdiff(names(df), response)
+predictors
+```
+
+I only run ten epochs to keep things fast.
+
+```{r}
+m1 <- h2o.deeplearning(
+  model_id="dl_model_first", 
+  training_frame=train, 
+  validation_frame=valid,   ## validation data are used for scoring and early stopping
+  x=predictors,
+  y=response,
+  activation="Rectifier",   ## default
+  hidden=c(100,100),       
+  epochs=100,
+  variable_importances=T    ## not enabled by default
+)
+summary(m1)
+```
+
+h2o implements the method of Gedeon
+
+- http://users.cecs.anu.edu.au/~Tom.Gedeon/pdfs/ContribDataMinv2.pdf
+
+to compute the relative variable importance 
+in descending order of importance.
+
+```{r}
+head(as.data.frame(h2o.varimp(m1)), 10)
+```
+
+```{r}
+plot(m1)
+```
+
+
+**Early Stopping**
+
+Here we stop training when the MSE converges 
+
+- the moving average of length 2 does not 
+  improve by at least 1% for 2 consecutive scoring events.
+
+
+```{r}
+m2 <- h2o.deeplearning(
+  model_id="dl_model_faster", 
+  training_frame=train, 
+  validation_frame=valid,
+  x=predictors,
+  y=response,
+  hidden=c(16,16,16,16),               ## small network, runs faster
+  epochs=1000000,                      ## hopefully converges earlier...
+  stopping_rounds=2,
+  stopping_metric="MSE",               ## could be "MSE","logloss","r2"
+  stopping_tolerance=0.01
+)
+summary(m2)
+plot(m2)
+```
+
+**Tuning**
+
+You can find more information on different tuning
+parameters in the H2O Deep Learning booklet
+
+- https://www.h2o.ai/resources/booklet/deep-learning-with-h2o/
+
+Here we are going to try and use penalty parameters.
+
+```{r}
+m3 <- h2o.deeplearning(
+  model_id="dl_model_tuned", 
+  training_frame=train, 
+  validation_frame=valid, 
+  x=predictors, 
+  y=response, 
+  hidden=c(32,32,32,32),      ## more hidden layers -> more complex interactions
+  epochs=1000,                ## to keep it short enough
+  score_duty_cycle=0.025,     ## don't score more than 2.5% of the wall time
+  l1=1e-5,                    ## add some L1/L2 regularization
+  l2=1e-5,
+  max_w2=10,                  ## helps stability for Rectifier
+  stopping_rounds=2,
+  stopping_metric="MSE",      ## could be "MSE","logloss","r2"
+  stopping_tolerance=0.01  
+) 
+summary(m3)
+```
+
+```{r}
+plot(m3)
+```
+
+```{r}
+h2o.performance(m1, newdata=test)  
+h2o.performance(m2, newdata=test)  
+h2o.performance(m3, newdata=test)  
+```
+
+
+**Tuning with Grid Search**
+
+A lot of parameters can impact model accuracy
+
+- hyper-parameter tuning is especially important for Deep Learning.
+
+
+The simplest way is to perform a 
+brute-force scan over all combinations 
+of specified parameters. 
+
+```{r}
+hyper_params <- list(
+  hidden=list(c(32,32,32),c(64,64)),
+  input_dropout_ratio=c(0,0.05),
+  l1=c(0,1e-5,1e-3),
+  l2=c(0,1e-5,1e-3),
+  max_w2=c(5,10)
+)
+
+grid <- h2o.grid(
+  algorithm="deeplearning",
+  grid_id="dl_grid", 
+  training_frame=train,
+  validation_frame=valid, 
+  x=predictors, 
+  y=response,
+  epochs=10,
+  stopping_metric="MSE",
+  stopping_tolerance=1e-2,        ## stop when MSE does not improve by >=1% for 2 scoring events
+  stopping_rounds=2,
+  score_duty_cycle=0.025,         ## don't score more than 2.5% of the wall time
+  hyper_params=hyper_params
+)
+```
+
+
+
+```{r}
+grid
+```
+
+
+```{r}
+grid <- h2o.getGrid("dl_grid",sort_by="rmse",decreasing=FALSE)
+grid
+```
+
+
+Find the best model and its full set of parameters
+```{r}
+grid@summary_table[1,]
+best_model <- h2o.getModel(grid@model_ids[[1]])
+best_model
+```
+
+
+```{r}
+h2o.performance(best_model, newdata=test)
+```
+
+
+**Tuning with Random Search**
+
+Hyper-parameter search for more than 4 parameters can be done
+more efficiently with random parameter search.
+
+```{r}
+hyper_params <- list(
+  activation=c("Rectifier","Tanh","RectifierWithDropout","TanhWithDropout"),
+  hidden=list(c(20,20),c(50,50),c(30,30,30),c(25,25,25,25),c(64,64,64,64)),
+  input_dropout_ratio=c(0,0.05),
+  l1=seq(0,1e-4,1e-6),
+  l2=seq(0,1e-4,1e-6),
+  max_w2=c(5,10,15)
+)
+
+## Stop once the top 5 models are within 1% of each other
+## 
+##     - the windowed average varies less than 1%
+##
+search_criteria = list(
+  strategy = "RandomDiscrete", 
+  max_runtime_secs = 360, 
+  max_models = 100, 
+  seed=1, 
+  stopping_rounds=5,
+  stopping_tolerance=1e-2
+  )
+
+dl_random_grid <- h2o.grid(
+  algorithm="deeplearning",
+  grid_id = "dl_grid_random",
+  training_frame=train,
+  validation_frame=valid, 
+  x=predictors, 
+  y=response,
+  epochs=10,
+  stopping_metric="MSE",
+  stopping_tolerance=1e-2,        ## stop when MSE does not improve by >=1% for 2 scoring events
+  stopping_rounds=2,
+  score_duty_cycle=0.025,         ## don't score more than 2.5% of the wall time
+  hyper_params = hyper_params,
+  search_criteria = search_criteria
+)         
+```
+
+```{r}
+grid <- h2o.getGrid("dl_grid_random", sort_by="RMSE", decreasing=FALSE)
+grid
+```
+
+
+```{r}
+grid@summary_table[1,]
+best_model <- h2o.getModel(grid@model_ids[[1]]) ## model with lowest RMSE
+best_model
+```
+
+```{r}
+h2o.performance(best_model, newdata=test)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

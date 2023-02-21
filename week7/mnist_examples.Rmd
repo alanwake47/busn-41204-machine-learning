@@ -1,0 +1,192 @@
+---
+title: "MNIST with Neural Networks"
+author: "Mladen Kolar (mkolar@chicagobooth.edu)"
+output: 
+  html_document: default
+pdf_document: default
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = TRUE)
+options(digits=3)
+```
+  
+Load the libraries.
+
+```{r, message=FALSE}
+library(h2o)
+library(tidyverse)
+```
+  
+Start up a 1-node H2O server on your local machine, 
+and allow it to use all CPU cores and up to 8GB of memory.
+```{r}
+h2o.init(nthreads=-1, max_mem_size="8G")
+h2o.no_progress()
+```
+  
+Load the MNIST database.
+```{r}
+load('mnist.RData')
+```
+
+
+Pixels are organized into images like this:
+  
+    001 002 003 ... 026 027 028
+    029 030 031 ... 054 055 056
+    057 058 059 ... 082 083 084
+     |   |   |  ...  |   |   |
+    729 730 731 ... 754 755 756
+    757 758 759 ... 782 783 784
+
+
+```{r out.width = '85%', fig.asp = .62}
+tmp <- lapply( c(91,2001), function(i){
+    expand.grid(Row=1:28, Column=1:28) %>%  
+      mutate(id=i, label=mnist$train$label[i],  
+             value = unlist(mnist$train$images[i,])) 
+})
+tmp <- Reduce(rbind, tmp)
+tmp %>% ggplot(aes(Row, Column, fill=value)) + 
+    geom_raster(show.legend = FALSE) + 
+    scale_y_reverse() +
+    scale_fill_gradient(low="white", high="black") +
+    facet_grid(.~label)
+```
+
+
+We need to load data into h2o format.
+```{r}
+df <- as.h2o(data.frame(x=mnist$train$images, 
+                       y=as.factor(mnist$train$label)))
+splits <- h2o.splitFrame(df, c(0.8), seed=1)
+train  <- h2o.assign(splits[[1]], "train.hex") 
+valid  <- h2o.assign(splits[[2]], "valid.hex") 
+test   <- as.h2o(data.frame(x=mnist$test$images,  
+                            y=as.factor(mnist$test$label)), 
+                "test.hex")
+
+predictors = 1:784
+response = 785
+```
+
+First MNIST model.
+```{r}
+if (!file.exists(file.path("mnist", "DL_FirstMNIST"))) {
+  dl_model <- h2o.deeplearning(
+    x=predictors, y=response,
+    training_frame=train,
+    validation_frame=valid,   ## validation data are used for scoring and early stopping
+    activation="RectifierWithDropout",
+    input_dropout_ratio=0.2,
+    l1=1e-5,
+    hidden=c(128,128,256), 
+    epochs=10,
+    stopping_rounds=2,
+    stopping_metric="logloss",           
+    stopping_tolerance=0.01,  
+    model_id = "DL_FirstMNIST"
+  )
+  h2o.saveModel(dl_model, path = "mnist")
+} else {
+  dl_model = h2o.loadModel(file.path("mnist", "DL_FirstMNIST"))
+}
+```
+
+
+This is fitted model.
+```{r}
+summary(dl_model)
+plot(dl_model)
+```
+
+Performance on the test set:
+```{r}
+h2o.performance(dl_model, newdata=test)
+h2o.confusionMatrix(h2o.performance(dl_model, newdata=test))
+```
+
+
+
+Bigger model trained for 50 epochs:
+```{r}
+if (!file.exists(file.path("mnist", "goodModel.epoch50"))) {
+  mdl <- h2o.deeplearning(
+    x=predictors, y=response,
+    training_frame=train,
+    validation_frame=valid,   ## validation data are used for scoring and early stopping
+    activation="RectifierWithDropout",
+    input_dropout_ratio=0.2,
+    l1=1e-5,
+    hidden=c(1024,1024,2048), 
+    epochs=50,
+    stopping_rounds=2,
+    stopping_metric="logloss",           
+    stopping_tolerance=0.01,  
+    model_id = "goodModel.epoch50"
+  )
+  h2o.saveModel(mdl, path = "mnist")
+} else {
+  mdl = h2o.loadModel(file.path("mnist", "goodModel.epoch50"))
+}
+```
+
+This is fitted model.
+```{r}
+summary(mdl)
+plot(mdl)
+```
+
+
+Performance on the test set:
+```{r}
+h2o.performance(mdl, newdata=test)
+h2o.confusionMatrix(h2o.performance(mdl, newdata=test))
+```
+
+Extract features using the model
+```{r}
+trainX.deep.features = h2o.deepfeatures(mdl, df[,predictors], layer = 3)
+testX.deep.features = h2o.deepfeatures(mdl, test[,predictors], layer = 3)
+
+dim(trainX.deep.features)
+```
+
+
+Fit a random forest with the deep features
+```{r}
+if (!file.exists( file.path("mnist", "DRF_features.2048") )) {
+  deep.rf = h2o.randomForest(
+    x=1:2048, y=2049, 
+    training_frame = h2o.cbind(trainX.deep.features, 
+                               df[,response]),
+    ntrees = 1000,
+    stopping_rounds = 5,                            
+    min_rows = 50,
+    model_id = "DRF_features.2048"
+    )
+  h2o.saveModel(deep.rf, path="mnist")
+} else {
+  deep.rf = h2o.loadModel( file.path("mnist", "DRF_features.2048") )
+}
+```
+
+```{r}
+summary(deep.rf)
+plot(deep.rf)
+```
+
+
+```{r}
+h2o.confusionMatrix(deep.rf, 
+                    h2o.cbind(testX.deep.features, test[,response]))
+```
+
+
+
+
+
+
+
